@@ -2,6 +2,9 @@
 //!
 //! Handles NSPanel setup, vibrancy effects, and global shortcuts.
 
+// The tauri_panel! macro requires `-> ()` syntax which clippy doesn't like
+#![allow(clippy::unused_unit)]
+
 use std::sync::Arc;
 
 use tauri::{App, Emitter, Listener, Manager};

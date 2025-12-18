@@ -180,7 +180,7 @@ impl PluginRegistry {
     /// Get all triggers that should be tested for a query.
     ///
     /// Returns an iterator over (plugin_name, trigger) pairs in registration order.
-    pub fn get_triggers<'a>(&'a self) -> Vec<(String, &'a Trigger)> {
+    pub fn get_triggers(&self) -> Vec<(String, &Trigger)> {
         // Note: This is a simplified version. The actual implementation needs
         // to handle the borrow checker properly since we're holding locks.
         // We may need to restructure to avoid returning references.
@@ -207,7 +207,7 @@ impl PluginRegistry {
     /// Get actions that apply to an item.
     ///
     /// Returns actions in registration order. First applicable action is default.
-    pub fn get_actions_for_item<'a>(&'a self) -> Vec<(String, usize)> {
+    pub fn get_actions_for_item(&self) -> Vec<(String, usize)> {
         // Returns (plugin_name, action_index) pairs
         // The actual filtering by applies_fn happens at call time
         let actions = self.actions.read();

@@ -9,11 +9,14 @@ use std::thread::{self, JoinHandle};
 use mlua::Lua;
 use tokio::sync::oneshot;
 
+/// Type alias for Lua closure functions.
+type LuaFn = Box<dyn FnOnce(&Lua) -> Result<serde_json::Value, String> + Send>;
+
 /// Request types for the Lua runtime thread.
 pub enum LuaRequest {
     /// Execute arbitrary code on the Lua thread.
     WithLua {
-        func: Box<dyn FnOnce(&Lua) -> Result<serde_json::Value, String> + Send>,
+        func: LuaFn,
         resp: oneshot::Sender<Result<serde_json::Value, String>>,
     },
     Shutdown,
@@ -70,8 +73,7 @@ impl LuaRuntime {
         let (resp_tx, resp_rx) = oneshot::channel();
 
         // Wrap the closure to return JSON
-        let boxed_fn: Box<dyn FnOnce(&Lua) -> Result<serde_json::Value, String> + Send> =
-            Box::new(move |lua| {
+        let boxed_fn: LuaFn = Box::new(move |lua| {
                 let result = f(lua)?;
                 serde_json::to_value(result).map_err(|e| e.to_string())
             });

@@ -211,7 +211,7 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
 }
 
 /// Convert a Lua value to a JSON value.
-pub fn lua_value_to_json(lua: &Lua, value: Value) -> LuaResult<serde_json::Value> {
+pub fn lua_value_to_json(_lua: &Lua, value: Value) -> LuaResult<serde_json::Value> {
     match value {
         Value::Nil => Ok(serde_json::Value::Null),
         Value::Boolean(b) => Ok(serde_json::Value::Bool(b)),
@@ -232,14 +232,14 @@ pub fn lua_value_to_json(lua: &Lua, value: Value) -> LuaResult<serde_json::Value
                 let mut arr = Vec::new();
                 for pair in t.pairs::<i64, Value>() {
                     let (_, v) = pair?;
-                    arr.push(lua_value_to_json(lua, v)?);
+                    arr.push(lua_value_to_json(_lua, v)?);
                 }
                 Ok(serde_json::Value::Array(arr))
             } else {
                 let mut obj = serde_json::Map::new();
                 for pair in t.pairs::<String, Value>() {
                     let (k, v) = pair?;
-                    obj.insert(k, lua_value_to_json(lua, v)?);
+                    obj.insert(k, lua_value_to_json(_lua, v)?);
                 }
                 Ok(serde_json::Value::Object(obj))
             }

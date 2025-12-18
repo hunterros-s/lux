@@ -93,7 +93,7 @@ pub fn load_init_lua(registry: Arc<PluginRegistry>) -> Result<Option<Lua>, Confi
 }
 
 /// Add a directory to Lua's package.path for require() to find modules.
-fn setup_package_path(lua: &Lua, lua_dir: &PathBuf) -> Result<(), mlua::Error> {
+fn setup_package_path(lua: &Lua, lua_dir: &std::path::Path) -> Result<(), mlua::Error> {
     let package: Table = lua.globals().get("package")?;
     let current_path: String = package.get("path")?;
 
