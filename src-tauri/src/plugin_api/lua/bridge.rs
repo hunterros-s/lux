@@ -160,7 +160,12 @@ impl UserData for ActionContextLua<'_> {
 /// Call a trigger's run function using effect-based execution.
 ///
 /// Returns the collected effects for the engine to apply.
-pub fn call_trigger_run(lua: &Lua, run_fn_key: &str, query: &str, args: &str) -> LuaResult<Vec<Effect>> {
+pub fn call_trigger_run(
+    lua: &Lua,
+    run_fn_key: &str,
+    query: &str,
+    args: &str,
+) -> LuaResult<Vec<Effect>> {
     let collector = EffectCollector::new();
 
     // Use lua.scope to create a context with the collector reference
@@ -280,8 +285,12 @@ pub fn call_view_on_select(
     let collector = EffectCollector::new();
 
     lua.scope(|scope| {
-        let ctx =
-            crate::plugin_api::context::SelectContext::new(item, view_data, current_selection, &collector);
+        let ctx = crate::plugin_api::context::SelectContext::new(
+            item,
+            view_data,
+            current_selection,
+            &collector,
+        );
         let wrapper = scope.create_userdata(SelectContextLua { inner: ctx })?;
 
         let func: mlua::Function = lua.named_registry_value(on_select_fn_key)?;
@@ -465,9 +474,9 @@ fn parse_item(lua: &Lua, table: Table) -> LuaResult<Item> {
         .get::<Option<String>>("id")?
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    let title: String = table.get("title").map_err(|e| {
-        mlua::Error::RuntimeError(format!("Item requires 'title' field: {}", e))
-    })?;
+    let title: String = table
+        .get("title")
+        .map_err(|e| mlua::Error::RuntimeError(format!("Item requires 'title' field: {}", e)))?;
 
     let subtitle: Option<String> = table.get("subtitle")?;
     let icon: Option<String> = table.get("icon")?;

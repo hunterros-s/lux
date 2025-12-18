@@ -96,7 +96,9 @@ pub fn execute_action(
 
     // Get the run function key
     let run_fn_key = registry
-        .with_action(plugin_name, action_index, |action| action.run_fn.key.clone())
+        .with_action(plugin_name, action_index, |action| {
+            action.run_fn.key.clone()
+        })
         .ok_or_else(|| format!("Action not found: {}:{}", plugin_name, action_index))?;
 
     // Call via the bridge, which uses effect-based execution

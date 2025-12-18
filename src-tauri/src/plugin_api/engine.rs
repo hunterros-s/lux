@@ -392,9 +392,14 @@ impl QueryEngine {
         };
 
         // Call via the bridge, which uses effect-based execution
-        let effects =
-            super::lua::call_view_on_select(lua, &on_select_key, item, &view_data, &current_selection)
-                .map_err(|e| format!("on_select failed: {}", e))?;
+        let effects = super::lua::call_view_on_select(
+            lua,
+            &on_select_key,
+            item,
+            &view_data,
+            &current_selection,
+        )
+        .map_err(|e| format!("on_select failed: {}", e))?;
 
         // Apply effects (selection changes are handled in apply_effects)
         self.apply_effects(lua, effects);
