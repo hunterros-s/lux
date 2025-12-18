@@ -1,0 +1,54 @@
+[package]
+name = "lux"
+version = "0.1.0"
+description = "A Spotlight-like macOS launcher with Lua plugin system"
+authors = ["Hunter Ross"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "lux_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+window-vibrancy = "0.7"
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-fs = "2"
+plist = "1"
+base64 = "0.22"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "rt"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+async-trait = "0.1"
+mlua = { version = "0.11", features = ["lua54", "vendored", "async", "send", "serde"] }
+dirs = "5"
+uuid = { version = "1", features = ["v4"] }
+wait-timeout = "0.2"
+
+# Concurrency - parking_lot never poisons, eliminating unwrap() calls on locks
+parking_lot = "0.12"
+
+# Structured logging - replaces log crate
+tracing = { version = "0.1", features = ["max_level_info", "release_max_level_warn"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+mockall = "0.13"
+tempfile = "3"
+tokio-test = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tauri = { version = "2", features = ["test"] }
+

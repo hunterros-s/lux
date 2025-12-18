@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+@theme {
+  /* Command item layout */
+  --size-item-icon: 24px;
+  --spacing-item-gap: 8px;
+  --spacing-item-x: 8px;
+  --spacing-item-y: 8px;
+  --text-item-title: 14px;
+  --text-item-subtitle: 12px;
+
+  /* Dark theme optimized for macOS vibrancy */
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-input: rgba(255, 255, 255, 0.1);
+  --color-ring: rgba(255, 255, 255, 0.2);
+  --color-background: transparent;
+  --color-foreground: rgba(255, 255, 255, 0.95);
+
+  --color-primary: rgba(255, 255, 255, 0.95);
+  --color-primary-foreground: rgba(0, 0, 0, 0.9);
+
+  --color-secondary: rgba(255, 255, 255, 0.08);
+  --color-secondary-foreground: rgba(255, 255, 255, 0.9);
+
+  --color-destructive: hsl(0 84.2% 60.2%);
+  --color-destructive-foreground: hsl(0 0% 98%);
+
+  --color-muted: rgba(255, 255, 255, 0.06);
+  --color-muted-foreground: rgba(255, 255, 255, 0.5);
+
+  --color-accent: rgba(255, 255, 255, 0.12);
+  --color-accent-foreground: rgba(255, 255, 255, 0.95);
+
+  --color-popover: transparent;
+  --color-popover-foreground: rgba(255, 255, 255, 0.95);
+
+  --color-card: rgba(255, 255, 255, 0.05);
+  --color-card-foreground: rgba(255, 255, 255, 0.95);
+
+  /* Feedback colors */
+  --color-success-bg: rgba(34, 197, 94, 0.2);
+  --color-success-border: rgba(34, 197, 94, 0.4);
+  --color-error-bg: rgba(239, 68, 68, 0.2);
+  --color-error-border: rgba(239, 68, 68, 0.4);
+  --color-border-subtle: rgba(255, 255, 255, 0.1);
+  --color-border-hover: rgba(255, 255, 255, 0.15);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+html, body, #root {
+  background: transparent;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  /* Disable WebKit behaviors for native feel */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  color: var(--color-foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "rlig" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+
+/* Command items container - scroll padding for scrollIntoView */
+[data-command-items] {
+  scroll-padding-block: 8px;
+  overflow-y: auto;
+}
+
+/* Command item states */
+[data-command-item] {
+  user-select: none;
+}
+
+[data-command-item][data-hovered="true"] {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+[data-command-item][data-selected="true"] {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+[data-command-item][data-disabled="true"] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Allow text selection in input */
+input {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Disable default focus styles */
+*:focus {
+  outline: none;
+}
+
+/* Disable drag */
+img, a {
+  -webkit-user-drag: none;
+  user-drag: none;
+}

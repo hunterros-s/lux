@@ -1,0 +1,29 @@
+node_modules
+dist
+*.local
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Rust build (also in src-tauri/.gitignore)
+src-tauri/target/
+
+# Test coverage
+coverage/
+
+# Claude Code local settings
+.claude/
