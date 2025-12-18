@@ -1,18 +1,15 @@
 //! Action execution and filtering logic.
 
-use std::sync::Arc;
-
 use mlua::Lua;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 
-use crate::plugin_api::context::{
-    build_action_applies_context, build_action_run_context, EngineState,
-};
+use crate::plugin_api::context::build_action_applies_context;
+use crate::plugin_api::effect::Effect;
+use crate::plugin_api::lua::call_action_run;
 use crate::plugin_api::registry::PluginRegistry;
-use crate::plugin_api::types::{ActionResult, Item, KeyBinding, KeypressResult, ViewInstance};
+use crate::plugin_api::types::{Item, KeyBinding, ViewInstance};
 
 use super::types::ActionInfo;
-use super::view_stack::{self};
 
 /// Get actions that apply to the given items.
 pub fn get_applicable_actions(
@@ -77,7 +74,10 @@ pub fn get_default_action(
     Ok(actions.into_iter().next())
 }
 
-/// Execute an action on the given items.
+/// Execute an action on the given items and return effects.
+///
+/// Uses effect-based execution: the action callback collects effects,
+/// which are returned for the engine to apply via `apply_effects()`.
 pub fn execute_action(
     registry: &PluginRegistry,
     view_stack: &RwLock<Vec<ViewInstance>>,
@@ -85,7 +85,7 @@ pub fn execute_action(
     plugin_name: &str,
     action_index: usize,
     items: &[Item],
-) -> Result<ActionResult, String> {
+) -> Result<Vec<Effect>, String> {
     let view_data = {
         let stack = view_stack.read();
         stack
@@ -94,81 +94,37 @@ pub fn execute_action(
             .unwrap_or(serde_json::Value::Null)
     };
 
-    let state = Arc::new(Mutex::new(EngineState::new()));
-    let ctx = build_action_run_context(lua, items, &view_data, Arc::clone(&state))
-        .map_err(|e| format!("Failed to build action context: {}", e))?;
+    // Get the run function key
+    let run_fn_key = registry
+        .with_action(plugin_name, action_index, |action| action.run_fn.key.clone())
+        .ok_or_else(|| format!("Action not found: {}:{}", plugin_name, action_index))?;
 
-    // Run the action
-    registry
-        .with_action(plugin_name, action_index, |action| {
-            action.run_fn.call::<_, ()>(lua, ctx)
-        })
-        .ok_or_else(|| format!("Action not found: {}:{}", plugin_name, action_index))?
+    // Call via the bridge, which uses effect-based execution
+    let effects = call_action_run(lua, &run_fn_key, items, &view_data)
         .map_err(|e| format!("Action execution failed: {}", e))?;
 
-    // Process state changes
-    let state = match Arc::try_unwrap(state) {
-        Ok(mutex) => mutex.into_inner(),
-        Err(arc) => arc.lock().clone(),
-    };
+    Ok(effects)
+}
 
-    // Handle view operations
-    if let Some(pushed) = state.pushed_view {
-        if pushed.replace {
-            view_stack::replace_view(view_stack, pushed.view, pushed.initial_query);
-        } else {
-            view_stack::push_view(view_stack, pushed.view, pushed.initial_query);
-        }
-        return Ok(ActionResult::PushView {
-            title: None,
-            query: None,
-        });
-    }
-
-    if state.popped {
-        view_stack::pop_view(view_stack);
-        return Ok(ActionResult::Pop);
-    }
-
-    if state.dismissed {
-        return Ok(ActionResult::Dismiss);
-    }
-
-    // Handle completion states
-    if let Some(error) = state.error {
-        return Ok(ActionResult::Fail { error });
-    }
-
-    if let Some(completion) = state.completion {
-        return Ok(ActionResult::Complete {
-            message: completion.message,
-            actions: completion
-                .follow_up_actions
-                .into_iter()
-                .map(|a| crate::plugin_api::types::FollowUpAction {
-                    title: a.title,
-                    icon: a.icon,
-                })
-                .collect(),
-        });
-    }
-
-    if let Some(message) = state.progress_message {
-        return Ok(ActionResult::Progress { message });
-    }
-
-    // Default: continue
-    Ok(ActionResult::Continue)
+/// Result of handling a keypress.
+pub enum KeypressEffects {
+    /// Key was handled, effects should be applied.
+    Handled(Vec<Effect>),
+    /// Key was not handled, frontend should process.
+    NotHandled,
 }
 
 /// Handle a keypress, checking view-specific bindings.
+///
+/// Returns effects if the key was handled, or NotHandled if the key
+/// should be processed by the frontend.
 pub fn handle_keypress(
     registry: &PluginRegistry,
     view_stack: &RwLock<Vec<ViewInstance>>,
     lua: &Lua,
     key: &str,
     items: &[Item],
-) -> Result<KeypressResult, String> {
+) -> Result<KeypressEffects, String> {
     // Get current view's key bindings
     let binding = {
         let stack = view_stack.read();
@@ -177,7 +133,7 @@ pub fn handle_keypress(
 
     match binding {
         Some(KeyBinding::Function(func_ref)) => {
-            // Build a generic context with items
+            // Get view_data for the action context
             let view_data = {
                 let stack = view_stack.read();
                 stack
@@ -186,37 +142,25 @@ pub fn handle_keypress(
                     .unwrap_or(serde_json::Value::Null)
             };
 
-            let state = Arc::new(Mutex::new(EngineState::new()));
-            let ctx = build_action_run_context(lua, items, &view_data, Arc::clone(&state))
-                .map_err(|e| format!("Failed to build key context: {}", e))?;
-
-            func_ref
-                .call::<_, ()>(lua, ctx)
+            // Call via the bridge, which uses effect-based execution
+            let effects = call_action_run(lua, &func_ref.key, items, &view_data)
                 .map_err(|e| format!("Key handler failed: {}", e))?;
 
-            // Process any state changes from the handler
-            let state = state.lock();
-            if let Some(ref _pushed) = state.pushed_view {
-                // Would need to handle view push here
-            }
-            if state.dismissed {
-                // Would signal dismiss
-            }
-
-            Ok(KeypressResult::Handled)
+            Ok(KeypressEffects::Handled(effects))
         }
         Some(KeyBinding::ActionId(action_id)) => {
             // Find and execute the action by ID
             let action_info = find_action_by_id(registry, &action_id);
             if let Some((plugin_name, action_index)) = action_info {
-                execute_action(registry, view_stack, lua, &plugin_name, action_index, items)?;
-                Ok(KeypressResult::Handled)
+                let effects =
+                    execute_action(registry, view_stack, lua, &plugin_name, action_index, items)?;
+                Ok(KeypressEffects::Handled(effects))
             } else {
                 tracing::warn!("Action not found for key binding: {}", action_id);
-                Ok(KeypressResult::NotHandled)
+                Ok(KeypressEffects::NotHandled)
             }
         }
-        None => Ok(KeypressResult::NotHandled),
+        None => Ok(KeypressEffects::NotHandled),
     }
 }
 

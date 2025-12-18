@@ -1,15 +1,17 @@
 //! Source searching and result aggregation logic.
 
-use std::sync::Arc;
-
 use mlua::Lua;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 
-use crate::plugin_api::context::{build_source_search_context, EngineState};
+use crate::plugin_api::effect::Effect;
+use crate::plugin_api::lua::call_source_search;
 use crate::plugin_api::registry::PluginRegistry;
-use crate::plugin_api::types::{Groups, Item, ViewInstance};
+use crate::plugin_api::types::{Group, Groups, ViewInstance};
 
 /// Run the current view's source function.
+///
+/// Uses effect-based execution: the source collects effects,
+/// we extract the SetGroups effect for the results.
 pub fn run_current_view_source(
     registry: &PluginRegistry,
     view_stack: &RwLock<Vec<ViewInstance>>,
@@ -36,25 +38,12 @@ pub fn run_current_view_source(
         }
     };
 
-    // Build context
-    let state = Arc::new(Mutex::new(EngineState::new()));
-    let ctx = build_source_search_context(lua, query, &view_data, Arc::clone(&state))
-        .map_err(|e| format!("Failed to build source context: {}", e))?;
+    // Call via the bridge, which uses effect-based execution
+    let effects = call_source_search(lua, &source_key, query, &view_data)
+        .map_err(|e| format!("Source search failed: {}", e))?;
 
-    // Call the source function
-    let result: mlua::Table = {
-        let registry_key = lua
-            .named_registry_value::<mlua::RegistryKey>(&source_key)
-            .map_err(|e| format!("Source function not found: {}", e))?;
-        let func: mlua::Function = lua
-            .registry_value(&registry_key)
-            .map_err(|e| format!("Failed to get source function: {}", e))?;
-        func.call(ctx)
-            .map_err(|e| format!("Source function failed: {}", e))?
-    };
-
-    // Parse the returned groups
-    parse_groups_from_lua(lua, result)
+    // Extract groups from the SetGroups effect
+    Ok(extract_groups_from_effects(effects))
 }
 
 /// Search all root sources and aggregate results.
@@ -90,7 +79,7 @@ pub fn search_root_sources(
                 items.extend(group.items);
             }
             if !items.is_empty() {
-                all_results.push(crate::plugin_api::types::Group {
+                all_results.push(Group {
                     title: Some(title),
                     items,
                 });
@@ -105,6 +94,9 @@ pub fn search_root_sources(
 }
 
 /// Run a single source and return its results.
+///
+/// Uses effect-based execution: the source callback collects effects,
+/// we extract the SetGroups effect for the results.
 pub fn run_source(
     registry: &PluginRegistry,
     lua: &Lua,
@@ -122,108 +114,30 @@ pub fn run_source(
         return Ok(Groups::new());
     }
 
-    // Build context
-    let state = Arc::new(Mutex::new(EngineState::new()));
-    let ctx = build_source_search_context(lua, query, view_data, Arc::clone(&state))
-        .map_err(|e| format!("Failed to build source context: {}", e))?;
-
-    // Call the source function
-    let result = registry
+    // Get the search function key
+    let search_fn_key = registry
         .with_source(plugin_name, source_index, |source| {
-            source.search_fn.call::<_, mlua::Table>(lua, ctx)
+            source.search_fn.key.clone()
         })
-        .ok_or_else(|| format!("Source not found: {}:{}", plugin_name, source_index))?
+        .ok_or_else(|| format!("Source not found: {}:{}", plugin_name, source_index))?;
+
+    // Call via the bridge, which uses effect-based execution
+    let effects = call_source_search(lua, &search_fn_key, query, view_data)
         .map_err(|e| format!("Source search failed: {}", e))?;
 
-    // Check if loading was called (async source)
-    {
-        let state = state.lock();
-        if state.loading {
-            // Async source - results will come via resolve()
-            // For now, return empty and let frontend poll
-            tracing::debug!("Source {}:{} is loading async", plugin_name, source_index);
-        }
-        if let Some(ref resolved) = state.resolved_results {
-            return Ok(resolved.clone());
-        }
-    }
-
-    // Parse the returned groups
-    parse_groups_from_lua(lua, result)
+    // Extract groups from the SetGroups effect
+    Ok(extract_groups_from_effects(effects))
 }
 
-// =============================================================================
-// Helper Functions
-// =============================================================================
-
-/// Parse Groups from a Lua table.
-fn parse_groups_from_lua(lua: &Lua, table: mlua::Table) -> Result<Groups, String> {
-    use crate::plugin_api::types::Group;
-
-    let mut groups = Vec::new();
-
-    for pair in table.pairs::<i64, mlua::Table>() {
-        let (_, group_table) = pair.map_err(|e| format!("Failed to iterate groups: {}", e))?;
-
-        let title: Option<String> = group_table
-            .get("title")
-            .map_err(|e| format!("Failed to get group title: {}", e))?;
-
-        let items_table: mlua::Table = group_table
-            .get("items")
-            .map_err(|e| format!("Failed to get group items: {}", e))?;
-
-        let mut items = Vec::new();
-        for item_pair in items_table.pairs::<i64, mlua::Table>() {
-            let (_, item_table) =
-                item_pair.map_err(|e| format!("Failed to iterate items: {}", e))?;
-            items.push(parse_item_from_lua(lua, item_table)?);
+/// Extract groups from a list of effects.
+///
+/// Looks for the SetGroups effect and returns its contents.
+/// If no SetGroups effect, returns empty groups.
+fn extract_groups_from_effects(effects: Vec<Effect>) -> Groups {
+    for effect in effects {
+        if let Effect::SetGroups(groups) = effect {
+            return groups;
         }
-
-        groups.push(Group { title, items });
     }
-
-    Ok(groups)
-}
-
-/// Parse an Item from a Lua table.
-fn parse_item_from_lua(lua: &Lua, table: mlua::Table) -> Result<Item, String> {
-    // ID is optional - auto-generate UUID if not provided
-    let id: String = table
-        .get::<Option<String>>("id")
-        .map_err(|e| format!("Failed to get id: {}", e))?
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let title: String = table
-        .get("title")
-        .map_err(|e| format!("Item missing title: {}", e))?;
-    let subtitle: Option<String> = table.get("subtitle").ok();
-    let icon: Option<String> = table.get("icon").ok();
-
-    let types: Vec<String> = table
-        .get::<Option<mlua::Table>>("types")
-        .ok()
-        .flatten()
-        .map(|t| {
-            t.pairs::<i64, String>()
-                .filter_map(|r| r.ok().map(|(_, v)| v))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let data: Option<serde_json::Value> = table
-        .get::<Option<mlua::Value>>("data")
-        .ok()
-        .flatten()
-        .map(|v| crate::plugin_api::lua::lua_value_to_json(lua, v))
-        .transpose()
-        .map_err(|e| format!("Failed to parse item data: {}", e))?;
-
-    Ok(Item {
-        id,
-        title,
-        subtitle,
-        icon,
-        types,
-        data,
-    })
+    Groups::new()
 }

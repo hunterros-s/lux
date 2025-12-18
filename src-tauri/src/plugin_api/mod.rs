@@ -48,7 +48,7 @@ pub use context::{
 pub use effect::{Effect, EffectCollector, ViewSpec};
 pub use error::{PluginError, PluginResult};
 pub use handle::{ActionHandle, ActionRegistry, SourceHandle, SourceRegistry, TriggerHandle, TriggerRegistry};
-pub use engine::{ActionInfo, QueryEngine};
+pub use engine::{ActionInfo, ApplyResult, QueryEngine};
 pub use lua::{json_to_lua_value, lua_value_to_json, register_lux_api};
 pub use registry::PluginRegistry;
 pub use types::{

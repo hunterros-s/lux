@@ -6,16 +6,14 @@
 
 use std::cell::RefCell;
 
-use super::types::Item;
-
 /// An effect returned by a Lua callback.
 ///
 /// Callbacks accumulate effects via [`EffectCollector`], then the engine
 /// applies them in [`Engine::apply_effects`].
 #[derive(Debug)]
 pub enum Effect {
-    /// Add items to current results.
-    SetItems(Vec<Item>),
+    /// Set the results for the current view.
+    SetGroups(Vec<super::types::Group>),
 
     /// Push a new view onto the stack.
     PushView(ViewSpec),
@@ -37,6 +35,18 @@ pub enum Effect {
 
     /// Mark action as failed.
     Fail { error: String },
+
+    // =========================================================================
+    // Selection Effects (for on_select hook)
+    // =========================================================================
+    /// Select item IDs.
+    Select(Vec<String>),
+
+    /// Deselect item IDs.
+    Deselect(Vec<String>),
+
+    /// Clear all selection.
+    ClearSelection,
 }
 
 /// Specification for a view to push.
@@ -52,11 +62,14 @@ pub struct ViewSpec {
     pub(crate) on_submit_fn_key: Option<String>,
     pub(crate) selection_mode: SelectionMode,
     pub(crate) view_data: serde_json::Value,
+    /// Registry keys that need cleanup when the view is popped.
+    pub(crate) registry_keys: Vec<String>,
 }
 
 impl ViewSpec {
     /// Create a new ViewSpec with the given source function key.
     pub fn new(source_fn_key: String) -> Self {
+        let registry_keys = vec![source_fn_key.clone()];
         Self {
             title: None,
             placeholder: None,
@@ -65,6 +78,7 @@ impl ViewSpec {
             on_submit_fn_key: None,
             selection_mode: SelectionMode::Single,
             view_data: serde_json::Value::Null,
+            registry_keys,
         }
     }
 
@@ -88,12 +102,14 @@ impl ViewSpec {
 
     /// Set the on_select callback key.
     pub fn with_on_select(mut self, key: String) -> Self {
+        self.registry_keys.push(key.clone());
         self.on_select_fn_key = Some(key);
         self
     }
 
     /// Set the on_submit callback key.
     pub fn with_on_submit(mut self, key: String) -> Self {
+        self.registry_keys.push(key.clone());
         self.on_submit_fn_key = Some(key);
         self
     }
@@ -102,6 +118,11 @@ impl ViewSpec {
     pub fn with_view_data(mut self, data: serde_json::Value) -> Self {
         self.view_data = data;
         self
+    }
+
+    /// Get the registry keys for cleanup when the view is popped.
+    pub fn registry_keys(&self) -> &[String] {
+        &self.registry_keys
     }
 }
 

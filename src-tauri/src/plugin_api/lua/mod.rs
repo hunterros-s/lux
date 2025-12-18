@@ -11,8 +11,13 @@ use mlua::{Lua, Result as LuaResult, Table, Value};
 
 use crate::plugin_api::registry::PluginRegistry;
 
+pub mod bridge;
 mod parse;
 
+pub use bridge::{
+    call_action_run, call_source_search, call_trigger_run, call_view_on_select,
+    call_view_on_submit, cleanup_view_registry_keys,
+};
 pub use parse::*;
 
 /// Register the new `lux` API in a Lua state.

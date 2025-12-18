@@ -775,9 +775,9 @@ impl<'a> TriggerContext<'a> {
         self.args
     }
 
-    /// Add items to the results.
-    pub fn set_items(&self, items: Vec<Item>) {
-        self.effects.push(Effect::SetItems(items));
+    /// Set grouped results.
+    pub fn set_groups(&self, groups: Vec<super::types::Group>) {
+        self.effects.push(Effect::SetGroups(groups));
     }
 
     /// Push a new view onto the stack.
@@ -826,9 +826,9 @@ impl<'a> SourceContext<'a> {
         self.view_data
     }
 
-    /// Set the items to return.
-    pub fn set_items(&self, items: Vec<Item>) {
-        self.effects.push(Effect::SetItems(items));
+    /// Set grouped results.
+    pub fn set_groups(&self, groups: Vec<super::types::Group>) {
+        self.effects.push(Effect::SetGroups(groups));
     }
 
     // Note: No push_view, no dismiss - sources just return items
@@ -904,24 +904,141 @@ impl<'a> ActionContext<'a> {
         self.effects.push(Effect::Fail { error: error.into() });
     }
 
-    // Note: No set_items - actions consume items, don't produce them
+    // Note: No set_groups - actions consume items, don't produce them
+}
+
+// =============================================================================
+// SelectContext (for on_select hooks)
+// =============================================================================
+
+/// Context for view.on_select callbacks.
+///
+/// Can: select, deselect, clear_selection
+/// Read-only: item, view_data, is_selected, get_selection
+pub struct SelectContext<'a> {
+    item: &'a Item,
+    view_data: &'a serde_json::Value,
+    current_selection: &'a std::collections::HashSet<String>,
+    effects: &'a EffectCollector,
+}
+
+impl<'a> SelectContext<'a> {
+    /// Create a new select context.
+    pub fn new(
+        item: &'a Item,
+        view_data: &'a serde_json::Value,
+        current_selection: &'a std::collections::HashSet<String>,
+        effects: &'a EffectCollector,
+    ) -> Self {
+        Self { item, view_data, current_selection, effects }
+    }
+
+    /// Get the item that was selected.
+    pub fn item(&self) -> &Item {
+        self.item
+    }
+
+    /// Get the view data.
+    pub fn view_data(&self) -> &serde_json::Value {
+        self.view_data
+    }
+
+    /// Check if an item is currently selected.
+    pub fn is_selected(&self, id: &str) -> bool {
+        self.current_selection.contains(id)
+    }
+
+    /// Get the current selection as a vector of IDs.
+    pub fn get_selection(&self) -> Vec<String> {
+        self.current_selection.iter().cloned().collect()
+    }
+
+    /// Select an item by ID.
+    pub fn select(&self, id: impl Into<String>) {
+        self.effects.push(Effect::Select(vec![id.into()]));
+    }
+
+    /// Deselect an item by ID.
+    pub fn deselect(&self, id: impl Into<String>) {
+        self.effects.push(Effect::Deselect(vec![id.into()]));
+    }
+
+    /// Clear all selection.
+    pub fn clear_selection(&self) {
+        self.effects.push(Effect::ClearSelection);
+    }
+}
+
+// =============================================================================
+// SubmitContext (for on_submit hooks)
+// =============================================================================
+
+/// Context for view.on_submit callbacks.
+///
+/// Can: push_view, replace_view, pop, dismiss
+pub struct SubmitContext<'a> {
+    query: &'a str,
+    view_data: &'a serde_json::Value,
+    effects: &'a EffectCollector,
+}
+
+impl<'a> SubmitContext<'a> {
+    /// Create a new submit context.
+    pub fn new(
+        query: &'a str,
+        view_data: &'a serde_json::Value,
+        effects: &'a EffectCollector,
+    ) -> Self {
+        Self { query, view_data, effects }
+    }
+
+    /// Get the current query.
+    pub fn query(&self) -> &str {
+        self.query
+    }
+
+    /// Get the view data.
+    pub fn view_data(&self) -> &serde_json::Value {
+        self.view_data
+    }
+
+    /// Push a new view onto the stack.
+    pub fn push_view(&self, spec: ViewSpec) {
+        self.effects.push(Effect::PushView(spec));
+    }
+
+    /// Replace the current view.
+    pub fn replace_view(&self, spec: ViewSpec) {
+        self.effects.push(Effect::ReplaceView(spec));
+    }
+
+    /// Pop the current view.
+    pub fn pop(&self) {
+        self.effects.push(Effect::Pop);
+    }
+
+    /// Dismiss the launcher.
+    pub fn dismiss(&self) {
+        self.effects.push(Effect::Dismiss);
+    }
 }
 
 #[cfg(test)]
 mod new_context_tests {
     use super::*;
+    use crate::plugin_api::types::Group;
 
     #[test]
     fn test_trigger_context_collects_effects() {
         let collector = EffectCollector::new();
         let ctx = TriggerContext::new("query", "args", &collector);
 
-        ctx.set_items(vec![]);
+        ctx.set_groups(vec![Group { title: None, items: vec![] }]);
         ctx.dismiss();
 
         let effects = collector.take();
         assert_eq!(effects.len(), 2);
-        assert!(matches!(effects[0], Effect::SetItems(_)));
+        assert!(matches!(effects[0], Effect::SetGroups(_)));
         assert!(matches!(effects[1], Effect::Dismiss));
     }
 
@@ -931,8 +1048,8 @@ mod new_context_tests {
         let view_data = serde_json::Value::Null;
         let ctx = SourceContext::new("query", &view_data, &collector);
 
-        // Can set items
-        ctx.set_items(vec![]);
+        // Can set groups
+        ctx.set_groups(vec![]);
 
         // Note: No push_view method exists - compile-time enforcement
         let effects = collector.take();
@@ -954,5 +1071,45 @@ mod new_context_tests {
 
         let effects = collector.take();
         assert_eq!(effects.len(), 5);
+    }
+
+    #[test]
+    fn test_select_context_collects_effects() {
+        let collector = EffectCollector::new();
+        let item = Item {
+            id: "item1".to_string(),
+            title: "Test Item".to_string(),
+            subtitle: None,
+            icon: None,
+            types: vec![],
+            data: None,
+        };
+        let view_data = serde_json::Value::Null;
+        let selection = HashSet::new();
+        let ctx = SelectContext::new(&item, &view_data, &selection, &collector);
+
+        ctx.select("item1");
+        ctx.deselect("item2");
+        ctx.clear_selection();
+
+        let effects = collector.take();
+        assert_eq!(effects.len(), 3);
+        assert!(matches!(effects[0], Effect::Select(_)));
+        assert!(matches!(effects[1], Effect::Deselect(_)));
+        assert!(matches!(effects[2], Effect::ClearSelection));
+    }
+
+    #[test]
+    fn test_submit_context_navigation() {
+        let collector = EffectCollector::new();
+        let view_data = serde_json::Value::Null;
+        let ctx = SubmitContext::new("query", &view_data, &collector);
+
+        ctx.push_view(ViewSpec::new("test".to_string()));
+        ctx.pop();
+        ctx.dismiss();
+
+        let effects = collector.take();
+        assert_eq!(effects.len(), 3);
     }
 }
