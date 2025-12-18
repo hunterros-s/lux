@@ -74,9 +74,9 @@ impl LuaRuntime {
 
         // Wrap the closure to return JSON
         let boxed_fn: LuaFn = Box::new(move |lua| {
-                let result = f(lua)?;
-                serde_json::to_value(result).map_err(|e| e.to_string())
-            });
+            let result = f(lua)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        });
 
         self.tx
             .send(LuaRequest::WithLua {
