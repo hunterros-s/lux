@@ -742,3 +742,217 @@ mod tests {
             .contains(&"new-item".to_string()));
     }
 }
+
+// =============================================================================
+// New Typestate Contexts (for effect-based execution)
+// =============================================================================
+
+use super::effect::{Effect, EffectCollector, ViewSpec};
+
+/// Context for trigger.run callbacks.
+///
+/// Can: set_items, push_view, dismiss
+/// Cannot: pop, progress, complete, fail (those are for actions)
+pub struct TriggerContext<'a> {
+    query: &'a str,
+    args: &'a str,
+    effects: &'a EffectCollector,
+}
+
+impl<'a> TriggerContext<'a> {
+    /// Create a new trigger context.
+    pub fn new(query: &'a str, args: &'a str, effects: &'a EffectCollector) -> Self {
+        Self { query, args, effects }
+    }
+
+    /// Get the query string.
+    pub fn query(&self) -> &str {
+        self.query
+    }
+
+    /// Get the arguments (portion after trigger prefix).
+    pub fn args(&self) -> &str {
+        self.args
+    }
+
+    /// Add items to the results.
+    pub fn set_items(&self, items: Vec<Item>) {
+        self.effects.push(Effect::SetItems(items));
+    }
+
+    /// Push a new view onto the stack.
+    pub fn push_view(&self, spec: ViewSpec) {
+        self.effects.push(Effect::PushView(spec));
+    }
+
+    /// Replace the current view.
+    pub fn replace_view(&self, spec: ViewSpec) {
+        self.effects.push(Effect::ReplaceView(spec));
+    }
+
+    /// Dismiss the launcher.
+    pub fn dismiss(&self) {
+        self.effects.push(Effect::Dismiss);
+    }
+}
+
+/// Context for source.search callbacks.
+///
+/// Can: set_items
+/// Cannot: push_view, dismiss, etc. (sources just return items)
+pub struct SourceContext<'a> {
+    query: &'a str,
+    view_data: &'a serde_json::Value,
+    effects: &'a EffectCollector,
+}
+
+impl<'a> SourceContext<'a> {
+    /// Create a new source context.
+    pub fn new(
+        query: &'a str,
+        view_data: &'a serde_json::Value,
+        effects: &'a EffectCollector,
+    ) -> Self {
+        Self { query, view_data, effects }
+    }
+
+    /// Get the query string.
+    pub fn query(&self) -> &str {
+        self.query
+    }
+
+    /// Get the view data.
+    pub fn view_data(&self) -> &serde_json::Value {
+        self.view_data
+    }
+
+    /// Set the items to return.
+    pub fn set_items(&self, items: Vec<Item>) {
+        self.effects.push(Effect::SetItems(items));
+    }
+
+    // Note: No push_view, no dismiss - sources just return items
+}
+
+/// Context for action.run callbacks.
+///
+/// Can: push_view, replace_view, pop, dismiss, progress, complete, fail
+/// Cannot: set_items (actions operate on items, don't produce them)
+pub struct ActionContext<'a> {
+    items: &'a [Item],
+    view_data: &'a serde_json::Value,
+    effects: &'a EffectCollector,
+}
+
+impl<'a> ActionContext<'a> {
+    /// Create a new action context.
+    pub fn new(
+        items: &'a [Item],
+        view_data: &'a serde_json::Value,
+        effects: &'a EffectCollector,
+    ) -> Self {
+        Self { items, view_data, effects }
+    }
+
+    /// Get the items the action is operating on.
+    pub fn items(&self) -> &[Item] {
+        self.items
+    }
+
+    /// Get the first item (convenience method).
+    pub fn item(&self) -> Option<&Item> {
+        self.items.first()
+    }
+
+    /// Get the view data.
+    pub fn view_data(&self) -> &serde_json::Value {
+        self.view_data
+    }
+
+    /// Push a new view onto the stack.
+    pub fn push_view(&self, spec: ViewSpec) {
+        self.effects.push(Effect::PushView(spec));
+    }
+
+    /// Replace the current view.
+    pub fn replace_view(&self, spec: ViewSpec) {
+        self.effects.push(Effect::ReplaceView(spec));
+    }
+
+    /// Pop the current view.
+    pub fn pop(&self) {
+        self.effects.push(Effect::Pop);
+    }
+
+    /// Dismiss the launcher.
+    pub fn dismiss(&self) {
+        self.effects.push(Effect::Dismiss);
+    }
+
+    /// Report progress for a long-running operation.
+    pub fn progress(&self, message: impl Into<String>) {
+        self.effects.push(Effect::Progress(message.into()));
+    }
+
+    /// Mark the action as complete.
+    pub fn complete(&self, message: impl Into<String>) {
+        self.effects.push(Effect::Complete { message: message.into() });
+    }
+
+    /// Mark the action as failed.
+    pub fn fail(&self, error: impl Into<String>) {
+        self.effects.push(Effect::Fail { error: error.into() });
+    }
+
+    // Note: No set_items - actions consume items, don't produce them
+}
+
+#[cfg(test)]
+mod new_context_tests {
+    use super::*;
+
+    #[test]
+    fn test_trigger_context_collects_effects() {
+        let collector = EffectCollector::new();
+        let ctx = TriggerContext::new("query", "args", &collector);
+
+        ctx.set_items(vec![]);
+        ctx.dismiss();
+
+        let effects = collector.take();
+        assert_eq!(effects.len(), 2);
+        assert!(matches!(effects[0], Effect::SetItems(_)));
+        assert!(matches!(effects[1], Effect::Dismiss));
+    }
+
+    #[test]
+    fn test_source_context_limited_methods() {
+        let collector = EffectCollector::new();
+        let view_data = serde_json::Value::Null;
+        let ctx = SourceContext::new("query", &view_data, &collector);
+
+        // Can set items
+        ctx.set_items(vec![]);
+
+        // Note: No push_view method exists - compile-time enforcement
+        let effects = collector.take();
+        assert_eq!(effects.len(), 1);
+    }
+
+    #[test]
+    fn test_action_context_has_all_navigation() {
+        let collector = EffectCollector::new();
+        let view_data = serde_json::Value::Null;
+        let items = vec![];
+        let ctx = ActionContext::new(&items, &view_data, &collector);
+
+        ctx.push_view(ViewSpec::new("test".to_string()));
+        ctx.pop();
+        ctx.dismiss();
+        ctx.progress("working...");
+        ctx.complete("done!");
+
+        let effects = collector.take();
+        assert_eq!(effects.len(), 5);
+    }
+}
