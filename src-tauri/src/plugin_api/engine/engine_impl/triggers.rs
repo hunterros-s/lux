@@ -1,13 +1,10 @@
 //! Trigger matching and execution logic.
 
-use std::sync::Arc;
-
 use mlua::Lua;
-use parking_lot::Mutex;
 
-use crate::plugin_api::context::{
-    build_trigger_match_context, build_trigger_run_context, EngineState,
-};
+use crate::plugin_api::context::build_trigger_match_context;
+use crate::plugin_api::effect::Effect;
+use crate::plugin_api::lua::call_trigger_run;
 use crate::plugin_api::registry::PluginRegistry;
 
 /// Find all triggers that match the current query.
@@ -52,16 +49,17 @@ pub fn find_matching_triggers(
     Ok(matching)
 }
 
-/// Run a single trigger and return its results.
+/// Run a single trigger and return its effects.
+///
+/// Uses effect-based execution: the trigger callback collects effects,
+/// which are returned for the engine to apply via `apply_effects()`.
 pub fn run_trigger(
     registry: &PluginRegistry,
     lua: &Lua,
     plugin_name: &str,
     trigger_index: usize,
     query: &str,
-) -> Result<EngineState, String> {
-    let state = Arc::new(Mutex::new(EngineState::new()));
-
+) -> Result<Vec<Effect>, String> {
     // Calculate args (query without prefix)
     let args = registry
         .with_trigger(plugin_name, trigger_index, |trigger| {
@@ -73,21 +71,16 @@ pub fn run_trigger(
         })
         .unwrap_or_else(|| query.to_string());
 
-    // Build context and run
-    let ctx = build_trigger_run_context(lua, query, &args, Arc::clone(&state))
-        .map_err(|e| format!("Failed to build trigger context: {}", e))?;
-
-    registry
+    // Get the run function key
+    let run_fn_key = registry
         .with_trigger(plugin_name, trigger_index, |trigger| {
-            trigger.run_fn.call::<_, ()>(lua, ctx)
+            trigger.run_fn.key.clone()
         })
-        .ok_or_else(|| format!("Trigger not found: {}:{}", plugin_name, trigger_index))?
+        .ok_or_else(|| format!("Trigger not found: {}:{}", plugin_name, trigger_index))?;
+
+    // Call via the bridge, which uses effect-based execution
+    let effects = call_trigger_run(lua, &run_fn_key, query, &args)
         .map_err(|e| format!("Trigger run failed: {}", e))?;
 
-    let result = match Arc::try_unwrap(state) {
-        Ok(mutex) => mutex.into_inner(),
-        Err(arc) => arc.lock().clone(),
-    };
-
-    Ok(result)
+    Ok(effects)
 }

@@ -45,7 +45,6 @@ use std::sync::Arc;
 use mlua::Lua;
 use parking_lot::{Mutex, RwLock};
 
-use super::context::{build_view_select_context, build_view_submit_context, EngineState};
 use super::registry::PluginRegistry;
 use super::types::{
     ActionResult, Direction, Groups, Item, KeypressResult, SelectionMode, View, ViewInstance,
@@ -228,25 +227,26 @@ impl QueryEngine {
         let matching_triggers = engine_impl::find_matching_triggers(&self.registry, lua, query)?;
 
         for (plugin_name, trigger_index) in matching_triggers {
-            let trigger_results =
+            // Run trigger and get effects
+            let effects =
                 engine_impl::run_trigger(&self.registry, lua, &plugin_name, trigger_index, query)?;
 
-            // Collect added results
-            all_results.extend(trigger_results.added_results);
+            // Apply effects and get result
+            let result = self.apply_effects(lua, effects);
 
-            // Handle view push/replace
-            if let Some(pushed) = trigger_results.pushed_view {
-                if pushed.replace {
-                    self.replace_view(pushed.view, pushed.initial_query);
-                } else {
-                    self.push_view(pushed.view, pushed.initial_query);
-                }
+            // Collect groups from SetGroups effects
+            if let Some(groups) = result.groups {
+                all_results.extend(groups);
+            }
+
+            // Check if a view was pushed (stack grew)
+            let stack_len = self.view_stack.read().len();
+            if stack_len > 1 {
                 view_pushed = true;
             }
 
             // Handle dismiss
-            if trigger_results.dismissed {
-                // Signal to frontend to dismiss
+            if result.dismissed {
                 return Ok(all_results);
             }
         }
@@ -291,14 +291,58 @@ impl QueryEngine {
         action_index: usize,
         items: &[Item],
     ) -> Result<ActionResult, String> {
-        engine_impl::execute_action(
+        // Get effects from the action
+        let effects = engine_impl::execute_action(
             &self.registry,
             &self.view_stack,
             lua,
             plugin_name,
             action_index,
             items,
-        )
+        )?;
+
+        // Apply effects and convert to ActionResult
+        let result = self.apply_effects(lua, effects);
+        Ok(self.apply_result_to_action_result(result))
+    }
+
+    /// Convert ApplyResult to ActionResult.
+    fn apply_result_to_action_result(&self, result: ApplyResult) -> ActionResult {
+        // Check view stack to see if a view was pushed
+        let stack_len = self.view_stack.read().len();
+
+        if result.dismissed {
+            return ActionResult::Dismiss;
+        }
+
+        if result.popped {
+            return ActionResult::Pop;
+        }
+
+        if let Some(error) = result.error {
+            return ActionResult::Fail { error };
+        }
+
+        if let Some(message) = result.completed {
+            return ActionResult::Complete {
+                message,
+                actions: Vec::new(),
+            };
+        }
+
+        if let Some(message) = result.progress {
+            return ActionResult::Progress { message };
+        }
+
+        // If stack grew, a view was pushed
+        if stack_len > 1 {
+            return ActionResult::PushView {
+                title: None,
+                query: None,
+            };
+        }
+
+        ActionResult::Continue
     }
 
     // =========================================================================
@@ -312,7 +356,14 @@ impl QueryEngine {
         key: &str,
         items: &[Item],
     ) -> Result<KeypressResult, String> {
-        engine_impl::handle_keypress(&self.registry, &self.view_stack, lua, key, items)
+        match engine_impl::handle_keypress(&self.registry, &self.view_stack, lua, key, items)? {
+            engine_impl::KeypressEffects::Handled(effects) => {
+                // Apply effects (view push/pop, dismiss, etc.)
+                self.apply_effects(lua, effects);
+                Ok(KeypressResult::Handled)
+            }
+            engine_impl::KeypressEffects::NotHandled => Ok(KeypressResult::NotHandled),
+        }
     }
 
     // =========================================================================
@@ -320,6 +371,9 @@ impl QueryEngine {
     // =========================================================================
 
     /// Handle selection in custom mode by calling on_select hook.
+    ///
+    /// Uses effect-based execution: the callback collects effects,
+    /// which are applied via `apply_effects()`.
     pub fn handle_custom_select(&self, lua: &Lua, item: &Item) -> Result<(), String> {
         let (on_select_key, view_data, current_selection) = {
             let stack = self.view_stack.read();
@@ -337,40 +391,18 @@ impl QueryEngine {
             None => return Ok(()), // No custom handler
         };
 
-        let state = Arc::new(Mutex::new(EngineState::new()));
-        let ctx = build_view_select_context(
+        // Call via the bridge, which uses effect-based execution
+        let effects = super::lua::call_view_on_select(
             lua,
+            &on_select_key,
             item,
             &view_data,
             &current_selection,
-            Arc::clone(&state),
         )
-        .map_err(|e| format!("Failed to build select context: {}", e))?;
+        .map_err(|e| format!("on_select failed: {}", e))?;
 
-        // Call the on_select function
-        let registry_key = lua
-            .named_registry_value::<mlua::RegistryKey>(&on_select_key)
-            .map_err(|e| format!("on_select function not found: {}", e))?;
-        let func: mlua::Function = lua
-            .registry_value(&registry_key)
-            .map_err(|e| format!("Failed to get on_select function: {}", e))?;
-        func.call::<()>(ctx)
-            .map_err(|e| format!("on_select failed: {}", e))?;
-
-        // Apply selection changes
-        let state = state.lock();
-        let mut stack = self.view_stack.write();
-        if let Some(view) = stack.last_mut() {
-            if state.selection_changes.cleared {
-                view.selected_ids.clear();
-            }
-            for id in &state.selection_changes.deselected {
-                view.selected_ids.remove(id);
-            }
-            for id in &state.selection_changes.selected {
-                view.selected_ids.insert(id.clone());
-            }
-        }
+        // Apply effects (selection changes are handled in apply_effects)
+        self.apply_effects(lua, effects);
 
         Ok(())
     }
@@ -380,6 +412,11 @@ impl QueryEngine {
     // =========================================================================
 
     /// Handle form submission by calling on_submit hook.
+    ///
+    /// Uses effect-based execution: the callback collects effects,
+    /// which are applied via `apply_effects()`.
+    ///
+    /// Returns true if dismiss was called.
     pub fn handle_submit(&self, lua: &Lua) -> Result<bool, String> {
         let (on_submit_key, view_data, query) = {
             let stack = self.view_stack.read();
@@ -397,62 +434,153 @@ impl QueryEngine {
             None => return Ok(false), // No submit handler
         };
 
-        let state = Arc::new(Mutex::new(EngineState::new()));
-        let ctx = build_view_submit_context(lua, &query, &view_data, Arc::clone(&state))
-            .map_err(|e| format!("Failed to build submit context: {}", e))?;
-
-        // Call the on_submit function
-        let registry_key = lua
-            .named_registry_value::<mlua::RegistryKey>(&on_submit_key)
-            .map_err(|e| format!("on_submit function not found: {}", e))?;
-        let func: mlua::Function = lua
-            .registry_value(&registry_key)
-            .map_err(|e| format!("Failed to get on_submit function: {}", e))?;
-        func.call::<()>(ctx)
+        // Call via the bridge, which uses effect-based execution
+        let effects = super::lua::call_view_on_submit(lua, &on_submit_key, &query, &view_data)
             .map_err(|e| format!("on_submit failed: {}", e))?;
 
-        // Process state changes
-        let state = match Arc::try_unwrap(state) {
-            Ok(mutex) => mutex.into_inner(),
-            Err(arc) => arc.lock().clone(),
-        };
+        // Apply effects and return whether dismiss was called
+        let result = self.apply_effects(lua, effects);
+        Ok(result.dismissed)
+    }
 
-        if let Some(pushed) = state.pushed_view {
-            if pushed.replace {
-                self.replace_view(pushed.view, pushed.initial_query);
-            } else {
-                self.push_view(pushed.view, pushed.initial_query);
+    // =========================================================================
+    // Effect-Based Execution (New)
+    // =========================================================================
+
+    /// Apply collected effects to the engine state.
+    ///
+    /// This is the single point of mutation for effect-based execution.
+    /// Lua callbacks collect effects, then the engine applies them here.
+    ///
+    /// Returns information about what happened for the caller to act on.
+    pub fn apply_effects(&self, lua: &Lua, effects: Vec<super::effect::Effect>) -> ApplyResult {
+        use super::effect::Effect;
+        use super::lua::cleanup_view_registry_keys;
+
+        let mut result = ApplyResult::default();
+
+        for effect in effects {
+            match effect {
+                Effect::SetGroups(groups) => {
+                    result.groups = Some(groups);
+                }
+                Effect::PushView(spec) => {
+                    let view = self.view_from_spec(&spec);
+                    let registry_keys = spec.registry_keys.clone();
+
+                    let mut stack = self.view_stack.write();
+                    stack.push(ViewInstance::with_registry_keys(view, None, registry_keys));
+                    tracing::debug!("Applied PushView, stack depth: {}", stack.len());
+                }
+                Effect::ReplaceView(spec) => {
+                    let view = self.view_from_spec(&spec);
+                    let registry_keys = spec.registry_keys.clone();
+
+                    let mut stack = self.view_stack.write();
+
+                    // Pop and cleanup the old view
+                    if let Some(old_view) = stack.pop() {
+                        cleanup_view_registry_keys(lua, &old_view.registry_keys);
+                    }
+
+                    stack.push(ViewInstance::with_registry_keys(view, None, registry_keys));
+                    tracing::debug!("Applied ReplaceView, stack depth: {}", stack.len());
+                }
+                Effect::Pop => {
+                    let mut stack = self.view_stack.write();
+                    if stack.len() > 1 {
+                        if let Some(old_view) = stack.pop() {
+                            cleanup_view_registry_keys(lua, &old_view.registry_keys);
+                        }
+                        tracing::debug!("Applied Pop, stack depth: {}", stack.len());
+                    }
+                    result.popped = true;
+                }
+                Effect::Dismiss => {
+                    result.dismissed = true;
+                    tracing::debug!("Applied Dismiss");
+                }
+                Effect::Progress(message) => {
+                    result.progress = Some(message);
+                }
+                Effect::Complete { message } => {
+                    result.completed = Some(message);
+                }
+                Effect::Fail { error } => {
+                    result.error = Some(error);
+                }
+                Effect::Select(ids) => {
+                    let mut stack = self.view_stack.write();
+                    if let Some(view) = stack.last_mut() {
+                        for id in ids {
+                            view.selected_ids.insert(id);
+                        }
+                    }
+                }
+                Effect::Deselect(ids) => {
+                    let mut stack = self.view_stack.write();
+                    if let Some(view) = stack.last_mut() {
+                        for id in ids {
+                            view.selected_ids.remove(&id);
+                        }
+                    }
+                }
+                Effect::ClearSelection => {
+                    let mut stack = self.view_stack.write();
+                    if let Some(view) = stack.last_mut() {
+                        view.selected_ids.clear();
+                    }
+                }
             }
         }
 
-        if state.popped {
-            self.pop_view();
-        }
+        result
+    }
 
-        Ok(state.dismissed)
+    /// Convert a ViewSpec to a View.
+    fn view_from_spec(&self, spec: &super::effect::ViewSpec) -> View {
+        use super::types::LuaFunctionRef;
+
+        let selection = match spec.selection_mode {
+            super::effect::SelectionMode::Single => SelectionMode::Single,
+            super::effect::SelectionMode::Multi => SelectionMode::Multi,
+            super::effect::SelectionMode::Custom => SelectionMode::Custom,
+        };
+
+        View {
+            title: spec.title.clone(),
+            placeholder: spec.placeholder.clone(),
+            source_fn: LuaFunctionRef::new(spec.source_fn_key.clone()),
+            selection,
+            on_select_fn: spec
+                .on_select_fn_key
+                .as_ref()
+                .map(|k| LuaFunctionRef::new(k.clone())),
+            on_submit_fn: spec
+                .on_submit_fn_key
+                .as_ref()
+                .map(|k| LuaFunctionRef::new(k.clone())),
+            view_data: spec.view_data.clone(),
+            keys: std::collections::HashMap::new(),
+        }
     }
 }
 
-// Implement Clone for EngineState (needed for Arc::try_unwrap fallback)
-impl Clone for EngineState {
-    fn clone(&self) -> Self {
-        Self {
-            added_results: self.added_results.clone(),
-            pushed_view: None, // Can't clone View easily
-            dismissed: self.dismissed,
-            popped: self.popped,
-            progress_message: self.progress_message.clone(),
-            completion: self.completion.clone(),
-            error: self.error.clone(),
-            loading: self.loading,
-            resolved_results: self.resolved_results.clone(),
-            selection_changes: super::context::SelectionChanges {
-                selected: self.selection_changes.selected.clone(),
-                deselected: self.selection_changes.deselected.clone(),
-                cleared: self.selection_changes.cleared,
-            },
-        }
-    }
+/// Result of applying effects.
+#[derive(Debug, Default)]
+pub struct ApplyResult {
+    /// Groups to display (from SetGroups effect).
+    pub groups: Option<Vec<super::types::Group>>,
+    /// Whether dismiss was called.
+    pub dismissed: bool,
+    /// Whether pop was called.
+    pub popped: bool,
+    /// Progress message, if any.
+    pub progress: Option<String>,
+    /// Completion message, if any.
+    pub completed: Option<String>,
+    /// Error message, if any.
+    pub error: Option<String>,
 }
 
 // =============================================================================

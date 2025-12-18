@@ -343,6 +343,10 @@ pub struct ViewInstance {
 
     /// Preserved scroll position.
     pub scroll_position: Option<u32>,
+
+    /// Lua registry keys to clean up when this view is popped.
+    /// Used for inline source functions and callbacks.
+    pub registry_keys: Vec<String>,
 }
 
 impl ViewInstance {
@@ -354,6 +358,23 @@ impl ViewInstance {
             selected_ids: HashSet::new(),
             query: initial_query.unwrap_or_default(),
             scroll_position: None,
+            registry_keys: Vec::new(),
+        }
+    }
+
+    /// Create a new view instance with registry keys for cleanup.
+    pub fn with_registry_keys(
+        view: View,
+        initial_query: Option<String>,
+        registry_keys: Vec<String>,
+    ) -> Self {
+        Self {
+            view,
+            cursor_id: None,
+            selected_ids: HashSet::new(),
+            query: initial_query.unwrap_or_default(),
+            scroll_position: None,
+            registry_keys,
         }
     }
 }

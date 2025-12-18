@@ -15,7 +15,7 @@ pub use types::*;
 
 // Re-export functions for use by engine.rs
 pub(super) use actions::{
-    execute_action, get_applicable_actions, get_default_action, handle_keypress,
+    execute_action, get_applicable_actions, get_default_action, handle_keypress, KeypressEffects,
 };
 pub(super) use selection::{
     clear_selection, get_cursor_id, get_selected_ids, move_cursor, set_cursor,
