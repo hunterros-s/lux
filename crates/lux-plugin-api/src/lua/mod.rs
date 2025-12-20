@@ -157,9 +157,12 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
                 ));
             };
 
-            registry
-                .keymap()
-                .set(PendingBinding { key, handler, context, view });
+            registry.keymap().set(PendingBinding {
+                key,
+                handler,
+                context,
+                view,
+            });
             Ok(())
         })?;
         keymap_table.set("set", set_fn)?;

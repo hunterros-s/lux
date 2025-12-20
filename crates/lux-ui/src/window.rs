@@ -136,7 +136,8 @@ impl LauncherWindow {
                 cx.set_global(theme);
 
                 // Create the root view - capture window in the closure
-                let panel = cx.new(|inner_cx| LauncherPanel::new(backend.clone(), window, inner_cx));
+                let panel =
+                    cx.new(|inner_cx| LauncherPanel::new(backend.clone(), window, inner_cx));
                 panel_entity = Some(panel.clone());
                 panel
             })
