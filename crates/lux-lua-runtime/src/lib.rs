@@ -101,7 +101,7 @@ impl LuaRuntime {
         T: serde::de::DeserializeOwned + serde::Serialize + 'static,
     {
         match tokio::time::timeout(timeout, self.with_lua(f)).await {
-            Ok(result) => result.map_err(|e| BackendError::Lua(e)),
+            Ok(result) => result.map_err(BackendError::Lua),
             Err(_) => Err(BackendError::Timeout { duration: timeout }),
         }
     }

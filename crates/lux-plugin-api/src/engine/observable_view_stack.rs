@@ -41,6 +41,7 @@ pub struct ObservableViewStack {
     rx: watch::Receiver<Vec<ViewState>>,
 }
 
+#[allow(dead_code)]
 impl ObservableViewStack {
     /// Create a new empty observable view stack.
     pub fn new() -> Self {

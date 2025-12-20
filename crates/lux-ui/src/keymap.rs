@@ -11,7 +11,9 @@
 
 use std::rc::Rc;
 
-use gpui::{App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, Keystroke};
+#[cfg(test)]
+use gpui::Keystroke;
+use gpui::{App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate};
 
 use lux_plugin_api::{KeyHandler, KeymapRegistry, PendingBinding};
 
@@ -32,6 +34,7 @@ fn normalize_keystroke(s: &str) -> String {
 /// Parse keystroke string to GPUI Keystroke.
 ///
 /// Accepts both "ctrl+n" and "ctrl-n" formats.
+#[cfg(test)]
 fn parse_keystroke(s: &str) -> Result<Keystroke, String> {
     let normalized = normalize_keystroke(s);
     Keystroke::parse(&normalized).map_err(|e| format!("Invalid keystroke '{}': {:?}", s, e))
@@ -53,7 +56,7 @@ fn build_context_predicate(view: Option<&str>) -> Option<Rc<KeyBindingContextPre
 
     KeyBindingContextPredicate::parse(&context_str)
         .ok()
-        .map(|p| Rc::new(p))
+        .map(Rc::new)
 }
 
 // =============================================================================

@@ -248,7 +248,7 @@ impl LauncherPanel {
         let view_states = vec![ViewDisplayState::default()];
 
         // Hide when window loses focus (user clicks outside)
-        cx.observe_window_activation(window, |this, window, cx| {
+        cx.observe_window_activation(window, |_this, window, cx| {
             if !window.is_window_active() {
                 cx.emit(LauncherPanelEvent::Dismiss);
             }
@@ -492,14 +492,6 @@ impl LauncherPanel {
             }
             SearchInputEvent::Submit => {
                 self.execute_default_action(cx);
-            }
-            SearchInputEvent::Dismiss => {
-                // Close action menu if open, otherwise dismiss
-                if self.action_menu.take().is_some() {
-                    cx.notify();
-                    return;
-                }
-                cx.emit(LauncherPanelEvent::Dismiss);
             }
             SearchInputEvent::Back => {
                 self.pop_view(cx);

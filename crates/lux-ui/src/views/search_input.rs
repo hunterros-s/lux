@@ -16,8 +16,8 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::actions::{
-    Backspace, Copy, Cut, Delete, Dismiss, End, Home, MoveLeft, MoveRight, Paste, SelectLeft,
-    SelectRight, Submit, TextSelectAll,
+    Backspace, Copy, Cut, Delete, End, Home, MoveLeft, MoveRight, Paste, SelectLeft, SelectRight,
+    Submit, TextSelectAll,
 };
 use crate::theme::ThemeExt;
 
@@ -32,8 +32,6 @@ pub enum SearchInputEvent {
     Changed(String),
     /// Enter pressed - execute current selection.
     Submit,
-    /// Escape pressed on empty input - dismiss launcher.
-    Dismiss,
     /// Backspace on empty input - pop view stack.
     Back,
 }
@@ -373,19 +371,6 @@ impl TextEditor {
 
     fn submit(&mut self, _: &Submit, _window: &mut Window, cx: &mut Context<Self>) {
         cx.emit(SearchInputEvent::Submit);
-    }
-
-    fn dismiss(&mut self, _: &Dismiss, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.text.is_empty() {
-            cx.emit(SearchInputEvent::Dismiss);
-        } else {
-            // Clear text first, next escape will dismiss
-            self.text.clear();
-            self.selected_range = 0..0;
-            self.marked_range = None;
-            cx.emit(SearchInputEvent::Changed(String::new()));
-            cx.notify();
-        }
     }
 
     // -------------------------------------------------------------------------

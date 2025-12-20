@@ -161,7 +161,7 @@ impl LauncherWindow {
         }
 
         // Spawn task to receive hotkey events
-        let handle_clone = window_handle.clone();
+        let handle_clone = window_handle;
         let hotkey_task = cx.spawn(async move |cx: &mut AsyncApp| {
             Self::handle_hotkey_events(rx, handle_clone, cx).await;
         });
@@ -218,7 +218,7 @@ impl LauncherWindow {
 
     /// Get the window handle.
     pub fn handle(&self) -> WindowHandle<LauncherPanel> {
-        self.window_handle.clone()
+        self.window_handle
     }
 
     /// Check if the window is currently visible/active.
