@@ -9,12 +9,12 @@ A Spotlight-like launcher for macOS with a Lua plugin system.
 - Spotlight-style floating panel with global keyboard shortcut
 - Lua plugin system for custom sources and actions
 - View stack navigation for drilling into results
+- Native macOS UI built with GPUI
 
 ## Requirements
 
 - macOS 10.15+
 - [Rust](https://rustup.rs/) 1.70+
-- [Node.js](https://nodejs.org/) 18+
 
 ## Installation
 
@@ -23,11 +23,10 @@ Build from source:
 ```bash
 git clone https://github.com/hunterross/lux.git
 cd lux
-npm install
-npm run tauri build
+cargo build --release
 ```
 
-The built app is in `src-tauri/target/release/bundle/macos/`.
+The built binary is in `target/release/lux-ui`.
 
 ## Usage
 
@@ -35,7 +34,7 @@ The built app is in `src-tauri/target/release/bundle/macos/`.
 
 | Key | Action |
 |-----|--------|
-| Cmd+Space+Shift | Toggle panel |
+| Cmd+Shift+Space | Toggle panel |
 | Enter | Execute default action |
 | Escape | Close panel / navigate back |
 | Arrow Up/Down | Navigate results |
@@ -63,38 +62,30 @@ lux.register_source({
 
 ```
 lux/
-├── src/                    # Solid.js frontend
-│   ├── components/         # UI components
-│   ├── features/           # Feature modules
-│   ├── store/              # State management
-│   └── core/               # Tauri API wrappers
-├── src-tauri/              # Rust backend
-│   └── src/
-│       ├── lib.rs          # App entry point
-│       ├── commands.rs     # Tauri commands
-│       ├── plugin_api/     # Lua plugin system
-│       └── platform/       # macOS-specific code
-└── package.json
+├── crates/
+│   ├── lux-core/           # Core types (Item, Group, ActionResult)
+│   ├── lux-plugin-api/     # Plugin system with Lua scripting
+│   ├── lux-lua-runtime/    # Lua runtime thread and async execution
+│   └── lux-ui/             # GPUI native frontend
+└── Cargo.toml
 ```
 
 ### Running in Development
 
 ```bash
-npm run tauri dev
+cargo run -p lux-ui
 ```
 
 ### Running Tests
 
 ```bash
-npm run test:run           # Frontend tests
-cargo test -p lux          # Rust tests
+cargo test
 ```
 
 ### Tech Stack
 
-- Frontend: Solid.js, TypeScript, Vite, Tailwind CSS
-- Backend: Tauri 2, Rust
-- Scripting Language: Lua 5.4 (mlua)
+- UI: [GPUI](https://github.com/zed-industries/zed) (native Rust UI framework)
+- Scripting: Lua 5.4 (mlua)
 
 ## Contributing
 

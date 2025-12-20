@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lux-core",
+    "crates/lux-plugin-api",
+    "crates/lux-lua-runtime",
+    "crates/lux-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Hunter Ross"]
+license = "MIT"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Lua
+mlua = { version = "0.11", features = ["lua54", "vendored", "async", "send", "serde"] }
+
+# Concurrency - parking_lot never poisons
+parking_lot = "0.12"
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = { version = "0.1", features = ["max_level_info", "release_max_level_warn"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+toml = "0.8"
+wait-timeout = "0.2"
+
+# GPUI
+# Note: gpui-component uses gpui without a rev, so we match that format
+# The Cargo.lock will pin both to the same resolved commit
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "d53f6f53" }
+
+# macOS
+objc2 = "0.5"
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSEvent", "NSResponder", "NSRunningApplication", "block2"] }
+objc2-foundation = { version = "0.2", features = ["NSString", "NSObject", "NSDictionary", "NSValue", "NSThread"] }
+block2 = "0.5"
+
+# Testing
+mockall = "0.13"
+tempfile = "3"
+insta = "1"
+
+# Internal crates
+lux-core = { path = "crates/lux-core" }
+lux-plugin-api = { path = "crates/lux-plugin-api" }
+lux-lua-runtime = { path = "crates/lux-lua-runtime" }
+lux-ui = { path = "crates/lux-ui" }
+
