@@ -771,10 +771,10 @@ impl LauncherPanel {
             })
             .hover(|style| style.bg(theme.surface_hover));
 
-        // Icon (if present)
-        if let Some(icon_str) = icon {
-            let icon_size = theme.icon_size;
-            let icon_el = if icon_str.starts_with('/') {
+        // Icon (always rendered - placeholder if not provided)
+        let icon_size = theme.icon_size;
+        let icon_el = if let Some(icon_str) = icon {
+            if icon_str.starts_with('/') {
                 use std::path::PathBuf;
                 img(PathBuf::from(icon_str))
                     .size(icon_size)
@@ -788,9 +788,17 @@ impl LauncherPanel {
                     .justify_center()
                     .child(icon_str)
                     .into_any_element()
-            };
-            row = row.child(icon_el);
-        }
+            }
+        } else {
+            // Placeholder: subtle rounded square
+            div()
+                .w(icon_size)
+                .h(icon_size)
+                .rounded(px(4.0))
+                .bg(theme.surface_hover)
+                .into_any_element()
+        };
+        row = row.child(icon_el);
 
         // Title and subtitle on same line
         let mut content = div()
