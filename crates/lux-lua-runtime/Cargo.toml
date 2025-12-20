@@ -1,0 +1,19 @@
+[package]
+name = "lux-lua-runtime"
+description = "Lua runtime management for the Lux launcher"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+lux-core.workspace = true
+mlua.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -1,0 +1,40 @@
+[package]
+name = "lux-ui"
+description = "GPUI frontend for the Lux launcher"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lux"
+path = "src/main.rs"
+
+[dependencies]
+lux-core.workspace = true
+lux-plugin-api.workspace = true
+lux-lua-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+parking_lot.workspace = true
+futures.workspace = true
+unicode-segmentation = "1.11"
+tokio = { workspace = true, features = ["rt"] }
+dirs.workspace = true
+mlua.workspace = true
+
+gpui.workspace = true
+gpui-component.workspace = true
+
+# macOS platform support
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+block2.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

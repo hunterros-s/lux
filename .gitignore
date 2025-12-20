@@ -1,7 +1,3 @@
-node_modules
-dist
-*.local
-
 # IDE
 .idea/
 *.swp
@@ -12,15 +8,14 @@ dist
 
 # Logs
 *.log
-npm-debug.log*
 
 # Environment
 .env
 .env.local
 .env.*.local
 
-# Rust build (also in src-tauri/.gitignore)
-src-tauri/target/
+# Rust build
+target/
 
 # Test coverage
 coverage/
