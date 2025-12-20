@@ -5,7 +5,9 @@
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventMask, NSEventModifierFlags};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventMask, NSEventModifierFlags,
+};
 use objc2_foundation::MainThreadMarker;
 use std::ptr::NonNull;
 use std::sync::Arc;

@@ -89,8 +89,8 @@ fn apply_binding(pending: PendingBinding, cx: &mut App) {
                     &keystroke,
                     action,
                     context_predicate,
-                    false,              // use_key_equivalents
-                    None,               // action_input
+                    false, // use_key_equivalents
+                    None,  // action_input
                     &DummyKeyboardMapper,
                 ) {
                     Ok(binding) => {
@@ -117,8 +117,8 @@ fn apply_binding(pending: PendingBinding, cx: &mut App) {
                 &keystroke,
                 Box::new(action),
                 context_predicate,
-                false,              // use_key_equivalents
-                None,               // action_input
+                false, // use_key_equivalents
+                None,  // action_input
                 &DummyKeyboardMapper,
             ) {
                 Ok(binding) => {

@@ -328,4 +328,3 @@ impl From<&ViewInstance> for ViewState {
         }
     }
 }
-

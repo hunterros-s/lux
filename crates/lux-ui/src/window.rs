@@ -134,13 +134,14 @@ impl LauncherWindow {
 
         // Subscribe to panel events (dismiss on escape)
         let panel_entity = panel_entity?;
-        cx.subscribe(&panel_entity, |_, event: &LauncherPanelEvent, cx| {
-            match event {
+        cx.subscribe(
+            &panel_entity,
+            |_, event: &LauncherPanelEvent, cx| match event {
                 LauncherPanelEvent::Dismiss => {
                     cx.hide();
                 }
-            }
-        })
+            },
+        )
         .detach();
 
         // Create hotkey channel (tokio async mpsc)

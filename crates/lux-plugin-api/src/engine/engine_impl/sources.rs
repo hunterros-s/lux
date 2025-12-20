@@ -26,12 +26,7 @@ pub fn run_current_view_source(
 
     // Get current view's source function and view_data
     let (source_key, view_data) = view_stack
-        .with_top(|view| {
-            (
-                view.view.source_fn.key.clone(),
-                view.view.view_data.clone(),
-            )
-        })
+        .with_top(|view| (view.view.source_fn.key.clone(), view.view.view_data.clone()))
         .ok_or_else(|| "No current view".to_string())?;
 
     // Call via the bridge, which uses effect-based execution

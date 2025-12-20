@@ -547,7 +547,11 @@ mod tests {
         let mut stack = ViewStack::new_root();
         assert!(stack.is_root());
 
-        stack.push(ViewFrame::new_push("Search files", Some("Files".to_string()), SelectionMode::Single));
+        stack.push(ViewFrame::new_push(
+            "Search files",
+            Some("Files".to_string()),
+            SelectionMode::Single,
+        ));
         assert!(!stack.is_root());
         assert_eq!(stack.depth(), 2);
 
@@ -668,8 +672,16 @@ mod tests {
         assert_eq!(crumbs.len(), 1);
         assert_eq!(crumbs[0], None); // Root has no title
 
-        stack.push(ViewFrame::new_push("", Some("Files".to_string()), SelectionMode::Single));
-        stack.push(ViewFrame::new_push("", Some("Recent".to_string()), SelectionMode::Single));
+        stack.push(ViewFrame::new_push(
+            "",
+            Some("Files".to_string()),
+            SelectionMode::Single,
+        ));
+        stack.push(ViewFrame::new_push(
+            "",
+            Some("Recent".to_string()),
+            SelectionMode::Single,
+        ));
 
         let crumbs: Vec<_> = stack.breadcrumbs().collect();
         assert_eq!(crumbs.len(), 3);

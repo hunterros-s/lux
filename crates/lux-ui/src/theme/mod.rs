@@ -241,8 +241,8 @@ impl Palette {
         Self {
             // Semi-transparent backgrounds for vibrancy/blur effect
             bg_base: hsla(0.0, 0.0, 0.10, 0.60),
-            bg_elevated: hsla(0.0, 0.0, 1.0, 0.08),   // subtle white for search box
-            bg_hover: hsla(0.0, 0.0, 1.0, 0.12),      // white overlay to brighten
+            bg_elevated: hsla(0.0, 0.0, 1.0, 0.08), // subtle white for search box
+            bg_hover: hsla(0.0, 0.0, 1.0, 0.12),    // white overlay to brighten
             fg_primary: hsla(0.0, 0.0, 0.95, 0.90),
             fg_secondary: hsla(0.0, 0.0, 0.60, 0.90),
             fg_tertiary: hsla(0.0, 0.0, 0.40, 0.90),
@@ -258,8 +258,8 @@ impl Palette {
         Self {
             // Semi-transparent backgrounds for vibrancy/blur effect
             bg_base: hsla(0.0, 0.0, 0.98, 0.60),
-            bg_elevated: hsla(0.0, 0.0, 0.0, 0.05),    // subtle black for search box
-            bg_hover: hsla(0.0, 0.0, 0.0, 0.08),       // black overlay to darken
+            bg_elevated: hsla(0.0, 0.0, 0.0, 0.05), // subtle black for search box
+            bg_hover: hsla(0.0, 0.0, 0.0, 0.08),    // black overlay to darken
             fg_primary: hsla(0.0, 0.0, 0.10, 1.0),
             fg_secondary: hsla(0.0, 0.0, 0.45, 1.0),
             fg_tertiary: hsla(0.0, 0.0, 0.60, 1.0),

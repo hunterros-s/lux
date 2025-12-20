@@ -374,14 +374,9 @@ impl QueryEngine {
             current_selection.iter().cloned().collect();
 
         // Call via the bridge, which uses effect-based execution
-        let effects = crate::lua::call_view_on_select(
-            lua,
-            &on_select_key,
-            item,
-            &view_data,
-            &selection_set,
-        )
-        .map_err(|e| format!("on_select failed: {}", e))?;
+        let effects =
+            crate::lua::call_view_on_select(lua, &on_select_key, item, &view_data, &selection_set)
+                .map_err(|e| format!("on_select failed: {}", e))?;
 
         // Apply effects
         self.apply_effects(lua, effects);

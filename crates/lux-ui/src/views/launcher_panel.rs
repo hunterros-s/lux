@@ -318,7 +318,10 @@ impl LauncherPanel {
         match new_depth.cmp(&current_depth) {
             Ordering::Greater => {
                 // View pushed - create new display state
-                tracing::info!("View pushed, adding {} display states", new_depth - current_depth);
+                tracing::info!(
+                    "View pushed, adding {} display states",
+                    new_depth - current_depth
+                );
                 for _ in current_depth..new_depth {
                     self.view_states.push(ViewDisplayState::default());
                 }
@@ -690,11 +693,12 @@ impl LauncherPanel {
 
     fn pop_view(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
-        cx.background_executor().spawn(async move {
-            let _ = backend.pop_view().await;
-            // State change will come via subscription
-        })
-        .detach();
+        cx.background_executor()
+            .spawn(async move {
+                let _ = backend.pop_view().await;
+                // State change will come via subscription
+            })
+            .detach();
     }
 
     // -------------------------------------------------------------------------
@@ -717,10 +721,7 @@ impl LauncherPanel {
     // -------------------------------------------------------------------------
 
     /// Render a group header row.
-    fn render_group_header(
-        title: &str,
-        theme: &crate::theme::Theme,
-    ) -> gpui::AnyElement {
+    fn render_group_header(title: &str, theme: &crate::theme::Theme) -> gpui::AnyElement {
         div()
             .w_full()
             .h(theme.group_header_height)
@@ -759,7 +760,10 @@ impl LauncherPanel {
         let icon = item.icon.clone();
 
         let mut row = div()
-            .id(ElementId::Name(SharedString::from(format!("item-{}", item_id))))
+            .id(ElementId::Name(SharedString::from(format!(
+                "item-{}",
+                item_id
+            ))))
             .w_full()
             .h(theme.item_height)
             .px_3()
@@ -880,48 +884,57 @@ impl Render for LauncherPanel {
                 .into_any_element()
         } else {
             let entity = cx.entity().clone();
-            v_virtual_list(entity, "results-list", item_sizes, |this, range, _window, cx| {
-                let theme = cx.theme().clone();
-                let Some(display) = this.view_states.last() else {
-                    return vec![];
-                };
-
-                let mut elements = Vec::with_capacity(range.len());
-                for ix in range {
-                    let Some(entry) = display.flat_entries.get(ix) else {
-                        elements.push(div().into_any_element());
-                        continue;
+            v_virtual_list(
+                entity,
+                "results-list",
+                item_sizes,
+                |this, range, _window, cx| {
+                    let theme = cx.theme().clone();
+                    let Some(display) = this.view_states.last() else {
+                        return vec![];
                     };
 
-                    match entry {
-                        ListEntry::GroupHeader { title } => {
-                            elements.push(Self::render_group_header(title, &theme));
-                        }
-                        ListEntry::Item { item, flat_index } => {
-                            let is_cursor = *flat_index == display.cursor_index;
-                            let is_selected = display
-                                .item_ids
-                                .get(*flat_index)
-                                .map(|id| display.selected_ids.contains(id))
-                                .unwrap_or(false);
+                    let mut elements = Vec::with_capacity(range.len());
+                    for ix in range {
+                        let Some(entry) = display.flat_entries.get(ix) else {
+                            elements.push(div().into_any_element());
+                            continue;
+                        };
 
-                            let row = Self::render_result_item(item, is_cursor, is_selected, &theme);
-                            let item_index = *flat_index;
-                            let row = row.on_click(cx.listener(
-                                move |this: &mut Self, event: &gpui::ClickEvent, _window, cx| {
-                                    if event.click_count() >= 2 {
-                                        this.on_item_double_click(item_index, cx);
-                                    } else {
-                                        this.on_item_click(item_index, cx);
-                                    }
-                                },
-                            ));
-                            elements.push(row.into_any_element());
+                        match entry {
+                            ListEntry::GroupHeader { title } => {
+                                elements.push(Self::render_group_header(title, &theme));
+                            }
+                            ListEntry::Item { item, flat_index } => {
+                                let is_cursor = *flat_index == display.cursor_index;
+                                let is_selected = display
+                                    .item_ids
+                                    .get(*flat_index)
+                                    .map(|id| display.selected_ids.contains(id))
+                                    .unwrap_or(false);
+
+                                let row =
+                                    Self::render_result_item(item, is_cursor, is_selected, &theme);
+                                let item_index = *flat_index;
+                                let row = row.on_click(cx.listener(
+                                    move |this: &mut Self,
+                                          event: &gpui::ClickEvent,
+                                          _window,
+                                          cx| {
+                                        if event.click_count() >= 2 {
+                                            this.on_item_double_click(item_index, cx);
+                                        } else {
+                                            this.on_item_click(item_index, cx);
+                                        }
+                                    },
+                                ));
+                                elements.push(row.into_any_element());
+                            }
                         }
                     }
-                }
-                elements
-            })
+                    elements
+                },
+            )
             .track_scroll(&self.scroll_handle)
             .w_full()
             .h_full()

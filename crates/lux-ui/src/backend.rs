@@ -243,7 +243,9 @@ impl Backend for RuntimeBackend {
             let func_ref = registry
                 .keymap()
                 .get_lua_handler(&handler_id)
-                .ok_or_else(|| BackendError::Lua(format!("Key handler not found: {}", handler_id)))?;
+                .ok_or_else(|| {
+                    BackendError::Lua(format!("Key handler not found: {}", handler_id))
+                })?;
 
             // Execute via the engine
             runtime

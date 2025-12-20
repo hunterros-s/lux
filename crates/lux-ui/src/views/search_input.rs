@@ -52,7 +52,11 @@ pub struct SearchInput {
 
 impl SearchInput {
     /// Create a new search input with the given placeholder text.
-    pub fn new(placeholder: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        placeholder: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let editor = cx.new(|cx| TextEditor::new(placeholder.into(), window, cx));
 
         // Forward events from editor so parent doesn't need to access .editor
@@ -388,7 +392,12 @@ impl TextEditor {
     // Mouse Handlers
     // -------------------------------------------------------------------------
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.is_selecting = true;
 
         if event.modifiers.shift {
@@ -402,7 +411,12 @@ impl TextEditor {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_selecting {
             self.select_to(self.index_for_mouse_position(event.position), cx);
         }
@@ -446,7 +460,11 @@ impl EntityInputHandler for TextEditor {
         })
     }
 
-    fn marked_text_range(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Range<usize>> {
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
         self.marked_range.as_ref().map(|r| self.range_to_utf16(r))
     }
 
@@ -601,9 +619,7 @@ impl Render for TextEditor {
             .rounded(theme.radius)
             .border_1()
             .border_color(theme.border)
-            .when(is_focused, |this| {
-                this.border_color(theme.border_focused)
-            })
+            .when(is_focused, |this| this.border_color(theme.border_focused))
             // Text element
             .child(TextInputElement {
                 editor: cx.entity().clone(),
@@ -729,7 +745,9 @@ impl Element for TextInputElement {
 
         // Shape text
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let line = window.text_system().shape_line(display_text, font_size, &runs, None);
+        let line = window
+            .text_system()
+            .shape_line(display_text, font_size, &runs, None);
 
         // Build cursor and selection quads
         let (selection_quad, cursor_quad) = if is_empty {

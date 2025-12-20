@@ -77,10 +77,7 @@ fn create_backend() -> Result<(Arc<RuntimeBackend>, Arc<KeymapRegistry>), String
                     .set_name(config_path.to_string_lossy())
                     .exec()
                 {
-                    tracing::error!(
-                        "init.lua error: {} - continuing with no plugins",
-                        e
-                    );
+                    tracing::error!("init.lua error: {} - continuing with no plugins", e);
                 } else {
                     tracing::info!("Config loaded successfully");
                 }

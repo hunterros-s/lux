@@ -11,14 +11,7 @@ use gpui::actions;
 
 actions!(
     lux,
-    [
-        CursorUp,
-        CursorDown,
-        CursorHome,
-        CursorEnd,
-        PageUp,
-        PageDown,
-    ]
+    [CursorUp, CursorDown, CursorHome, CursorEnd, PageUp, PageDown,]
 );
 
 // =============================================================================
