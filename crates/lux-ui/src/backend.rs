@@ -91,6 +91,15 @@ pub trait Backend: Send + Sync {
         handler_id: &str,
         items: Vec<Item>,
     ) -> BoxFuture<'static, Result<ActionResult, BackendError>>;
+
+    /// Run a global hotkey handler by ID.
+    ///
+    /// This is used for system hotkeys that run when the app may be hidden.
+    /// The handler receives an empty context (no items/selection).
+    fn run_global_hotkey_handler(
+        &self,
+        handler_id: &str,
+    ) -> BoxFuture<'static, Result<ActionResult, BackendError>>;
 }
 
 // =============================================================================
@@ -257,6 +266,14 @@ impl Backend for RuntimeBackend {
                 .await
         })
     }
+
+    fn run_global_hotkey_handler(
+        &self,
+        handler_id: &str,
+    ) -> BoxFuture<'static, Result<ActionResult, BackendError>> {
+        // Global hotkey handlers receive empty context
+        self.run_key_handler(handler_id, vec![])
+    }
 }
 
 // Keep BackendHandle as an alias for backwards compatibility
@@ -378,6 +395,14 @@ pub mod mock {
             _items: Vec<Item>,
         ) -> BoxFuture<'static, Result<ActionResult, BackendError>> {
             // Mock: key handlers are a no-op
+            Box::pin(async move { Ok(ActionResult::Continue) })
+        }
+
+        fn run_global_hotkey_handler(
+            &self,
+            _handler_id: &str,
+        ) -> BoxFuture<'static, Result<ActionResult, BackendError>> {
+            // Mock: global hotkey handlers are a no-op
             Box::pin(async move { Ok(ActionResult::Continue) })
         }
     }

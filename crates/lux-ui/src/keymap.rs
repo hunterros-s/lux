@@ -44,14 +44,20 @@ fn parse_keystroke(s: &str) -> Result<Keystroke, String> {
 // Context Building
 // =============================================================================
 
-/// Build GPUI context predicate for view-specific binding.
+/// Build GPUI context predicate from context and optional view ID.
 ///
-/// - Global bindings: context = "Launcher"
-/// - View-specific: context = "Launcher && view_id == file_browser"
-fn build_context_predicate(view: Option<&str>) -> Option<Rc<KeyBindingContextPredicate>> {
+/// - No context, no view: context = "Launcher" (default)
+/// - Context only: context = "{context}"
+/// - Context + view: context = "{context} && view_id == {view}"
+/// - No context + view: context = "Launcher && view_id == {view}"
+fn build_context_predicate(
+    context: Option<&str>,
+    view: Option<&str>,
+) -> Option<Rc<KeyBindingContextPredicate>> {
+    let base = context.unwrap_or("Launcher");
     let context_str = match view {
-        None => "Launcher".to_string(),
-        Some(v) => format!("Launcher && view_id == {}", v),
+        Some(v) => format!("{} && view_id == {}", base, v),
+        None => base.to_string(),
     };
 
     KeyBindingContextPredicate::parse(&context_str)
@@ -68,9 +74,8 @@ fn build_context_predicate(view: Option<&str>) -> Option<Rc<KeyBindingContextPre
 /// This should be called after Lua config is loaded but before the UI shows.
 /// It takes all pending bindings from the registry and registers them with GPUI.
 ///
-/// Default bindings should be registered first via `register_default_bindings()`,
-/// then user bindings via this function. GPUI uses last-wins semantics, so user
-/// bindings will override defaults.
+/// Default bindings are registered in `main.rs` before user config loads.
+/// User config can override them via `lux.keymap.del()` + `lux.keymap.set()`.
 pub fn apply_keybindings(keymap: &KeymapRegistry, cx: &mut App) {
     let bindings = keymap.take_bindings();
 
@@ -81,7 +86,8 @@ pub fn apply_keybindings(keymap: &KeymapRegistry, cx: &mut App) {
 
 /// Apply a single binding to GPUI.
 fn apply_binding(pending: PendingBinding, cx: &mut App) {
-    let context_predicate = build_context_predicate(pending.view.as_deref());
+    let context_predicate =
+        build_context_predicate(pending.context.as_deref(), pending.view.as_deref());
     let keystroke = normalize_keystroke(&pending.key);
 
     match pending.handler {
@@ -99,9 +105,10 @@ fn apply_binding(pending: PendingBinding, cx: &mut App) {
                     Ok(binding) => {
                         cx.bind_keys([binding]);
                         tracing::debug!(
-                            "Registered action binding: {} -> {} (view: {:?})",
+                            "Registered action binding: {} -> {} (context: {:?}, view: {:?})",
                             pending.key,
                             name,
+                            pending.context,
                             pending.view
                         );
                     }
@@ -127,9 +134,10 @@ fn apply_binding(pending: PendingBinding, cx: &mut App) {
                 Ok(binding) => {
                     cx.bind_keys([binding]);
                     tracing::debug!(
-                        "Registered Lua handler binding: {} -> {} (view: {:?})",
+                        "Registered Lua handler binding: {} -> {} (context: {:?}, view: {:?})",
                         pending.key,
                         id,
+                        pending.context,
                         pending.view
                     );
                 }
@@ -139,45 +147,6 @@ fn apply_binding(pending: PendingBinding, cx: &mut App) {
             }
         }
     }
-}
-
-// =============================================================================
-// Default Bindings
-// =============================================================================
-
-/// Register default keybindings.
-///
-/// These are the base bindings that users can override via `lux.keymap.set()`.
-/// Call this BEFORE `apply_keybindings()` so user bindings take precedence.
-pub fn register_default_bindings(cx: &mut App) {
-    use crate::actions::*;
-
-    // Navigation - Launcher context
-    cx.bind_keys([
-        KeyBinding::new("up", CursorUp, Some("Launcher")),
-        KeyBinding::new("down", CursorDown, Some("Launcher")),
-        KeyBinding::new("tab", OpenActionMenu, Some("Launcher")),
-        KeyBinding::new("cmd-enter", ToggleSelection, Some("Launcher")),
-        KeyBinding::new("escape", Dismiss, Some("Launcher")),
-    ]);
-
-    // Text editing - SearchInput context
-    cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, Some("SearchInput")),
-        KeyBinding::new("delete", Delete, Some("SearchInput")),
-        KeyBinding::new("left", MoveLeft, Some("SearchInput")),
-        KeyBinding::new("right", MoveRight, Some("SearchInput")),
-        KeyBinding::new("shift-left", SelectLeft, Some("SearchInput")),
-        KeyBinding::new("shift-right", SelectRight, Some("SearchInput")),
-        KeyBinding::new("cmd-a", TextSelectAll, Some("SearchInput")),
-        KeyBinding::new("home", Home, Some("SearchInput")),
-        KeyBinding::new("end", End, Some("SearchInput")),
-        KeyBinding::new("cmd-c", Copy, Some("SearchInput")),
-        KeyBinding::new("cmd-v", Paste, Some("SearchInput")),
-        KeyBinding::new("cmd-x", Cut, Some("SearchInput")),
-        KeyBinding::new("enter", Submit, Some("SearchInput")),
-        // Note: escape is handled by Launcher context, not here
-    ]);
 }
 
 #[cfg(test)]

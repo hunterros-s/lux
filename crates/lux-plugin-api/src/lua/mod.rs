@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use mlua::{Function, Lua, MultiValue, Result as LuaResult, Table, Value};
 
-use crate::keymap::{generate_handler_id, KeyHandler, PendingBinding};
+use crate::keymap::{
+    generate_handler_id, BuiltInHotkey, GlobalHandler, KeyHandler, PendingBinding, PendingHotkey,
+};
 use crate::registry::PluginRegistry;
 use crate::types::LuaFunctionRef;
 
@@ -97,7 +99,9 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
     //
     // Examples:
     //   lux.keymap.set("ctrl+n", "cursor_down")
-    //   lux.keymap.set("ctrl+o", "open_finder", { view = "files" })
+    //   lux.keymap.set("ctrl+n", "cursor_down", { context = "Launcher" })
+    //   lux.keymap.set("enter", "submit", { context = "SearchInput" })
+    //   lux.keymap.set("ctrl+o", "open_finder", { context = "Launcher", view = "files" })
     //   lux.keymap.set("ctrl+d", function(ctx) ... end, { view = "files" })
     {
         let registry = Arc::clone(&registry);
@@ -128,7 +132,14 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
 
             // Third arg: opts (optional)
             let opts: Option<Table> = args_iter.next().and_then(|v| lua.unpack(v).ok());
-            let view = opts.and_then(|t| t.get::<Option<String>>("view").ok().flatten());
+            let (context, view) = if let Some(ref t) = opts {
+                (
+                    t.get::<Option<String>>("context").ok().flatten(),
+                    t.get::<Option<String>>("view").ok().flatten(),
+                )
+            } else {
+                (None, None)
+            };
 
             // Parse handler
             let handler = if let Ok(action_name) = lua.unpack::<String>(handler_val.clone()) {
@@ -146,10 +157,135 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
                 ));
             };
 
-            registry.keymap().set(PendingBinding { key, handler, view });
+            registry
+                .keymap()
+                .set(PendingBinding { key, handler, context, view });
             Ok(())
         })?;
         keymap_table.set("set", set_fn)?;
+    }
+
+    // lux.keymap.del(key, opts?)
+    //
+    // Remove a keybinding by key, context, and optional view.
+    // Note: Only works at startup time before bindings are registered with GPUI.
+    //
+    // Examples:
+    //   lux.keymap.del("enter", { context = "SearchInput" })
+    //   lux.keymap.del("up", { context = "Launcher" })
+    //   lux.keymap.del("ctrl+d", { context = "Launcher", view = "files" })
+    {
+        let registry = Arc::clone(&registry);
+        let del_fn = lua.create_function(move |lua, args: MultiValue| {
+            let mut args_iter = args.into_iter();
+
+            // First arg: key (required)
+            let key: String = match args_iter.next() {
+                Some(v) => lua
+                    .unpack(v)
+                    .map_err(|_| mlua::Error::RuntimeError("key must be a string".to_string()))?,
+                None => {
+                    return Err(mlua::Error::RuntimeError(
+                        "keymap.del requires key argument".to_string(),
+                    ))
+                }
+            };
+
+            // Second arg: opts (optional)
+            let opts: Option<Table> = args_iter.next().and_then(|v| lua.unpack(v).ok());
+            let (context, view) = if let Some(ref t) = opts {
+                (
+                    t.get::<Option<String>>("context").ok().flatten(),
+                    t.get::<Option<String>>("view").ok().flatten(),
+                )
+            } else {
+                (None, None)
+            };
+
+            let removed = registry
+                .keymap()
+                .del(&key, context.as_deref(), view.as_deref());
+            Ok(removed)
+        })?;
+        keymap_table.set("del", del_fn)?;
+    }
+
+    // lux.keymap.set_global(key, handler)
+    //
+    // Examples:
+    //   lux.keymap.set_global("cmd+shift+space", "toggle_launcher")
+    //   lux.keymap.set_global("cmd+shift+n", function() lux.shell("open -a Notes") end)
+    {
+        let registry = Arc::clone(&registry);
+        let set_global_fn = lua.create_function(move |lua, args: MultiValue| {
+            let mut args_iter = args.into_iter();
+
+            // First arg: key (required)
+            let key: String = match args_iter.next() {
+                Some(v) => lua
+                    .unpack(v)
+                    .map_err(|_| mlua::Error::RuntimeError("key must be a string".to_string()))?,
+                None => {
+                    return Err(mlua::Error::RuntimeError(
+                        "keymap.set_global requires key argument".to_string(),
+                    ))
+                }
+            };
+
+            // Second arg: handler (required) - string or function
+            let handler_val = match args_iter.next() {
+                Some(v) => v,
+                None => {
+                    return Err(mlua::Error::RuntimeError(
+                        "keymap.set_global requires handler argument".to_string(),
+                    ))
+                }
+            };
+
+            // Parse handler
+            let handler = if let Ok(action_name) = lua.unpack::<String>(handler_val.clone()) {
+                // Built-in action
+                if let Some(builtin) = BuiltInHotkey::from_name(&action_name) {
+                    GlobalHandler::BuiltIn(builtin)
+                } else {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Unknown global action: '{}'. Available: toggle_launcher",
+                        action_name
+                    )));
+                }
+            } else if let Ok(func) = lua.unpack::<Function>(handler_val) {
+                // Lua function binding - store in registry
+                let id = generate_handler_id();
+                let func_ref = LuaFunctionRef::from_function(lua, func, id.clone())?;
+                registry.keymap().store_lua_handler(id.clone(), func_ref);
+                GlobalHandler::Function { id }
+            } else {
+                return Err(mlua::Error::RuntimeError(
+                    "handler must be string or function".to_string(),
+                ));
+            };
+
+            registry.keymap().set_global(PendingHotkey { key, handler });
+            Ok(())
+        })?;
+        keymap_table.set("set_global", set_global_fn)?;
+    }
+
+    // lux.keymap.del_global(key)
+    //
+    // Remove a global hotkey by key string.
+    // Note: Only works at startup time before hotkeys are registered with the OS.
+    {
+        let registry = Arc::clone(&registry);
+        let del_global_fn = lua.create_function(move |lua, key: Value| {
+            let key: String = lua
+                .unpack(key)
+                .map_err(|_| mlua::Error::RuntimeError("key must be a string".to_string()))?;
+
+            let removed = registry.keymap().del_global(&key);
+            Ok(removed)
+        })?;
+        keymap_table.set("del_global", del_global_fn)?;
     }
 
     lux.set("keymap", keymap_table)?;

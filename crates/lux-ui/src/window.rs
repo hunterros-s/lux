@@ -11,13 +11,13 @@ use gpui::{
 };
 use tokio::sync::mpsc::{self, Receiver};
 
-use lux_plugin_api::KeymapRegistry;
+use lux_plugin_api::{BuiltInHotkey, GlobalHandler, KeymapRegistry};
 
 use crate::backend::Backend;
-use crate::keymap::{apply_keybindings, register_default_bindings};
+use crate::keymap::apply_keybindings;
 use crate::platform::{
-    has_accessibility_permission, prompt_accessibility_permission, set_activation_policy_accessory,
-    Hotkey, HotkeyManager,
+    has_accessibility_permission, parse_hotkey, prompt_accessibility_permission,
+    set_activation_policy_accessory, Hotkey, HotkeyCallback, HotkeyManager, MultiHotkeyManager,
 };
 use crate::theme::Theme;
 use crate::views::{LauncherPanel, LauncherPanelEvent};
@@ -51,9 +51,12 @@ fn create_window_options() -> WindowOptions {
 // =============================================================================
 
 /// Events sent from the hotkey callback to the GPUI main thread.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum HotkeyEvent {
+    /// Toggle launcher visibility.
     Toggle,
+    /// Run a Lua handler by ID.
+    RunLuaHandler(String),
 }
 
 // =============================================================================
@@ -86,8 +89,10 @@ pub enum HotkeyEvent {
 pub struct LauncherWindow {
     /// The GPUI window handle.
     window_handle: WindowHandle<LauncherPanel>,
-    /// Global hotkey manager (kept alive to maintain registration).
+    /// Legacy single hotkey manager (kept for migration, will be removed).
     _hotkey_manager: Option<HotkeyManager>,
+    /// Multi-hotkey manager for Lua-registered hotkeys.
+    _multi_hotkey_manager: Option<MultiHotkeyManager>,
     /// Task polling the hotkey channel (kept alive).
     _hotkey_task: Task<()>,
 }
@@ -98,11 +103,16 @@ impl LauncherWindow {
     /// This will:
     /// 1. Check for accessibility permissions (required for global hotkey)
     /// 2. Create the window with the LauncherPanel
-    /// 3. Register the global hotkey
+    /// 3. Register the global hotkey (legacy) and Lua-configured hotkeys
     /// 4. Set up the hotkey-to-GPUI bridge
     ///
     /// Returns `None` if the window couldn't be created.
-    pub fn new(hotkey: Hotkey, backend: Arc<dyn Backend>, cx: &mut App) -> Option<Self> {
+    pub fn new(
+        hotkey: Hotkey,
+        backend: Arc<dyn Backend>,
+        keymap: &KeymapRegistry,
+        cx: &mut App,
+    ) -> Option<Self> {
         // Check accessibility permissions
         if !has_accessibility_permission() {
             tracing::warn!("Accessibility permissions not granted, prompting user");
@@ -126,7 +136,7 @@ impl LauncherWindow {
                 cx.set_global(theme);
 
                 // Create the root view - capture window in the closure
-                let panel = cx.new(|inner_cx| LauncherPanel::new(backend, window, inner_cx));
+                let panel = cx.new(|inner_cx| LauncherPanel::new(backend.clone(), window, inner_cx));
                 panel_entity = Some(panel.clone());
                 panel
             })
@@ -145,30 +155,43 @@ impl LauncherWindow {
         .detach();
 
         // Create hotkey channel (tokio async mpsc)
-        let (tx, rx) = mpsc::channel::<HotkeyEvent>(16);
+        let (tx, rx) = mpsc::channel::<HotkeyEvent>(32);
 
-        // Create hotkey manager with channel sender
+        // Create legacy hotkey manager with channel sender (for the default toggle)
+        let tx_toggle = tx.clone();
         let hotkey_manager = HotkeyManager::new(hotkey, move || {
             // Just signal, don't touch GPUI from here
             // Use try_send to avoid blocking if channel is full
-            let _ = tx.try_send(HotkeyEvent::Toggle);
+            let _ = tx_toggle.try_send(HotkeyEvent::Toggle);
         });
 
         if hotkey_manager.is_none() {
             tracing::warn!(
-                "Failed to register global hotkey - accessibility permissions may be required"
+                "Failed to register legacy hotkey - accessibility permissions may be required"
+            );
+        }
+
+        // Create multi-hotkey manager for Lua-configured hotkeys
+        let multi_hotkey_manager = MultiHotkeyManager::new();
+        if let Some(ref manager) = multi_hotkey_manager {
+            apply_global_hotkeys(keymap, manager, tx.clone());
+        } else {
+            tracing::warn!(
+                "Failed to create multi-hotkey manager - accessibility permissions may be required"
             );
         }
 
         // Spawn task to receive hotkey events
         let handle_clone = window_handle;
+        let backend_clone = backend;
         let hotkey_task = cx.spawn(async move |cx: &mut AsyncApp| {
-            Self::handle_hotkey_events(rx, handle_clone, cx).await;
+            Self::handle_hotkey_events(rx, handle_clone, backend_clone, cx).await;
         });
 
         Some(Self {
             window_handle,
             _hotkey_manager: hotkey_manager,
+            _multi_hotkey_manager: multi_hotkey_manager,
             _hotkey_task: hotkey_task,
         })
     }
@@ -177,6 +200,7 @@ impl LauncherWindow {
     async fn handle_hotkey_events(
         mut rx: Receiver<HotkeyEvent>,
         handle: WindowHandle<LauncherPanel>,
+        backend: Arc<dyn Backend>,
         cx: &mut AsyncApp,
     ) {
         while let Some(event) = rx.recv().await {
@@ -198,6 +222,32 @@ impl LauncherWindow {
                             panel.show(window, cx);
                             window.activate_window();
                         });
+                    }
+                }
+                HotkeyEvent::RunLuaHandler(id) => {
+                    // Run the Lua handler with empty context (app may be hidden)
+                    let backend_clone = backend.clone();
+                    let result = backend_clone.run_global_hotkey_handler(&id).await;
+
+                    match result {
+                        Ok(action_result) => {
+                            // If the handler wants to push a view, show the window first
+                            if matches!(
+                                action_result,
+                                lux_core::ActionResult::PushView { .. }
+                                    | lux_core::ActionResult::ReplaceView { .. }
+                            ) {
+                                let _ = handle.update(cx, |panel, window, cx| {
+                                    panel.show(window, cx);
+                                    window.activate_window();
+                                });
+                            }
+                            // TODO: Apply the action result to the panel
+                            tracing::debug!("Global hotkey handler result: {:?}", action_result);
+                        }
+                        Err(e) => {
+                            tracing::error!("Global hotkey handler failed: {:?}", e);
+                        }
                     }
                 }
             }
@@ -226,6 +276,45 @@ impl LauncherWindow {
     /// This queries the actual window state rather than tracking separately.
     pub fn is_visible(&self, cx: &mut App) -> bool {
         self.window_handle.is_active(cx).unwrap_or(false)
+    }
+}
+
+// =============================================================================
+// Global Hotkey Registration
+// =============================================================================
+
+/// Apply Lua-configured global hotkeys to the multi-hotkey manager.
+fn apply_global_hotkeys(
+    keymap: &KeymapRegistry,
+    manager: &MultiHotkeyManager,
+    tx: tokio::sync::mpsc::Sender<HotkeyEvent>,
+) {
+    for pending in keymap.take_hotkeys() {
+        // Parse the hotkey string
+        let Some(hotkey) = parse_hotkey(&pending.key) else {
+            tracing::warn!("Invalid hotkey string: '{}', skipping", pending.key);
+            continue;
+        };
+
+        // Create the callback based on handler type
+        let callback: HotkeyCallback = match pending.handler {
+            GlobalHandler::BuiltIn(BuiltInHotkey::ToggleLauncher) => {
+                let tx = tx.clone();
+                Arc::new(move || {
+                    let _ = tx.try_send(HotkeyEvent::Toggle);
+                })
+            }
+            GlobalHandler::Function { id } => {
+                let tx = tx.clone();
+                Arc::new(move || {
+                    let _ = tx.try_send(HotkeyEvent::RunLuaHandler(id.clone()));
+                })
+            }
+        };
+
+        // Register the hotkey
+        manager.register(hotkey, callback);
+        tracing::debug!("Registered global hotkey from Lua: {}", pending.key);
     }
 }
 
@@ -271,13 +360,12 @@ pub fn run_launcher(hotkey: Hotkey, backend: Arc<dyn Backend>, keymap: Arc<Keyma
         // Initialize gpui-component
         gpui_component::init(cx);
 
-        // Register keybindings: defaults first, then Lua-configured bindings
-        // GPUI uses last-wins semantics, so user bindings override defaults
-        register_default_bindings(cx);
+        // Apply keybindings from registry (defaults + user overrides)
+        // Defaults were registered in main.rs, user config may have modified them
         apply_keybindings(&keymap, cx);
 
-        // Create the launcher window
-        let launcher = LauncherWindow::new(hotkey, backend, cx);
+        // Create the launcher window (pass keymap for global hotkeys)
+        let launcher = LauncherWindow::new(hotkey, backend, &keymap, cx);
 
         if launcher.is_none() {
             tracing::error!("Failed to create launcher window");

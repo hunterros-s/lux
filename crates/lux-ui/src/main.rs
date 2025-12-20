@@ -6,7 +6,10 @@
 use std::sync::Arc;
 
 use lux_lua_runtime::LuaRuntime;
-use lux_plugin_api::{lua::register_lux_api, KeymapRegistry, PluginRegistry, QueryEngine};
+use lux_plugin_api::{
+    lua::register_lux_api, BuiltInHotkey, GlobalHandler, KeyHandler, KeymapRegistry,
+    PendingBinding, PendingHotkey, PluginRegistry, QueryEngine,
+};
 use lux_ui::backend::{Backend, RuntimeBackend};
 use lux_ui::platform::Hotkey;
 use lux_ui::window::run_launcher;
@@ -41,6 +44,133 @@ fn get_config_path() -> Option<std::path::PathBuf> {
 }
 
 // =============================================================================
+// Default Keybindings
+// =============================================================================
+
+/// Register default GPUI keybindings via the KeymapRegistry.
+///
+/// These are registered before user config loads so users can override them
+/// with `lux.keymap.del()` + `lux.keymap.set()`.
+fn register_default_bindings(keymap: &KeymapRegistry) {
+    // Navigation - Launcher context
+    keymap.set(PendingBinding {
+        key: "up".to_string(),
+        handler: KeyHandler::Action("cursor_up".to_string()),
+        context: Some("Launcher".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "down".to_string(),
+        handler: KeyHandler::Action("cursor_down".to_string()),
+        context: Some("Launcher".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "tab".to_string(),
+        handler: KeyHandler::Action("open_action_menu".to_string()),
+        context: Some("Launcher".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "cmd+enter".to_string(),
+        handler: KeyHandler::Action("toggle_selection".to_string()),
+        context: Some("Launcher".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "escape".to_string(),
+        handler: KeyHandler::Action("dismiss".to_string()),
+        context: Some("Launcher".to_string()),
+        view: None,
+    });
+
+    // Text editing - SearchInput context
+    keymap.set(PendingBinding {
+        key: "backspace".to_string(),
+        handler: KeyHandler::Action("backspace".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "delete".to_string(),
+        handler: KeyHandler::Action("delete".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "left".to_string(),
+        handler: KeyHandler::Action("move_left".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "right".to_string(),
+        handler: KeyHandler::Action("move_right".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "shift+left".to_string(),
+        handler: KeyHandler::Action("select_left".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "shift+right".to_string(),
+        handler: KeyHandler::Action("select_right".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "cmd+a".to_string(),
+        handler: KeyHandler::Action("text_select_all".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "home".to_string(),
+        handler: KeyHandler::Action("home".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "end".to_string(),
+        handler: KeyHandler::Action("end".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "cmd+c".to_string(),
+        handler: KeyHandler::Action("copy".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "cmd+v".to_string(),
+        handler: KeyHandler::Action("paste".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "cmd+x".to_string(),
+        handler: KeyHandler::Action("cut".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+    keymap.set(PendingBinding {
+        key: "enter".to_string(),
+        handler: KeyHandler::Action("submit".to_string()),
+        context: Some("SearchInput".to_string()),
+        view: None,
+    });
+
+    tracing::debug!(
+        "Registered {} default GPUI bindings",
+        keymap.binding_count()
+    );
+}
+
+// =============================================================================
 // Initialization
 // =============================================================================
 
@@ -65,6 +195,18 @@ fn create_backend() -> Result<(Arc<RuntimeBackend>, Arc<KeymapRegistry>), String
     register_lux_api(&lua, registry.clone())
         .map_err(|e| format!("Failed to register Lua API: {}", e))?;
     tracing::info!("Lua API registered");
+
+    // Step 2.5: Register default global hotkey (before user config loads)
+    // User can override this in init.lua with lux.keymap.del_global() + set_global()
+    registry.keymap().set_global(PendingHotkey {
+        key: "cmd+shift+space".to_string(),
+        handler: GlobalHandler::BuiltIn(BuiltInHotkey::ToggleLauncher),
+    });
+    tracing::debug!("Registered default toggle hotkey: cmd+shift+space");
+
+    // Step 2.6: Register default GPUI bindings (before user config loads)
+    // User can override these in init.lua with lux.keymap.del() + lux.keymap.set()
+    register_default_bindings(registry.keymap().as_ref());
 
     // Step 3: Load init.lua if it exists (graceful degradation on error)
     if let Some(config_path) = get_config_path() {
@@ -94,11 +236,12 @@ fn create_backend() -> Result<(Arc<RuntimeBackend>, Arc<KeymapRegistry>), String
         tracing::info!("Create ~/.config/lux/init.lua to customize");
     }
 
-    // Get keymap from registry (holds Lua function handlers + pending bindings)
+    // Get keymap from registry (holds Lua function handlers + pending bindings + hotkeys)
     let keymap = registry.keymap();
     tracing::info!(
-        "Keymap: {} pending bindings, {} Lua handlers",
+        "Keymap: {} GPUI bindings, {} global hotkeys, {} Lua handlers",
         keymap.binding_count(),
+        keymap.hotkey_count(),
         keymap.handler_count()
     );
 
