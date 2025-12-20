@@ -21,7 +21,10 @@ pub mod types;
 pub use effect::{Effect, EffectCollector, ViewSpec};
 pub use engine::{ActionInfo, ApplyResult, QueryEngine};
 pub use error::{PluginError, PluginResult};
-pub use keymap::{generate_handler_id, KeyHandler, KeymapRegistry, PendingBinding};
+pub use keymap::{
+    generate_handler_id, BuiltInHotkey, GlobalHandler, KeyHandler, KeymapRegistry, PendingBinding,
+    PendingHotkey,
+};
 pub use lua::register_lux_api;
 pub use registry::{PluginRegistry, RegistryError, RegistryResult};
 pub use types::{
