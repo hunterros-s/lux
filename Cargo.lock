@@ -3094,6 +3094,7 @@ dependencies = [
 name = "lux-plugin-api"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.10.0",
  "dirs 5.0.1",
  "lux-core",
  "mlua",

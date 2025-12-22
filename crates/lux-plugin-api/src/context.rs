@@ -3,6 +3,7 @@
 //! This module provides:
 //! - Table-based contexts for simple hooks (match, applies)
 //! - Typestate contexts for effect-based execution (run, search, select, submit)
+//! - Unified context for the new API
 //!
 //! ## Context Types
 //!
@@ -15,9 +16,11 @@
 //! | `action.run` | ActionContext | push_view, replace_view, pop, dismiss, progress, complete, fail |
 //! | `view.on_select` | SelectContext | select, deselect, clear_selection, is_selected, get_selection |
 //! | `view.on_submit` | SubmitContext | push_view, replace_view, pop, dismiss |
+//! | new API | UnifiedContext | all methods, runtime capability checks |
 
 use std::collections::HashSet;
 
+use bitflags::bitflags;
 use mlua::{Lua, Result as LuaResult, Table};
 
 use crate::effect::{Effect, EffectCollector, ViewSpec};
@@ -256,7 +259,13 @@ impl<'a> ActionContext<'a> {
         });
     }
 
-    // Note: No set_groups - actions consume items, don't produce them
+    /// Set grouped results.
+    ///
+    /// Note: This is primarily for keybinding handlers that need to update
+    /// the displayed results (e.g., showing clipboard contents).
+    pub fn set_groups(&self, groups: Vec<Group>) {
+        self.effects.push(Effect::SetGroups(groups));
+    }
 }
 
 /// Context for view.on_select callbacks.
@@ -374,6 +383,311 @@ impl<'a> SubmitContext<'a> {
     pub fn dismiss(&self) {
         self.effects.push(Effect::Dismiss);
     }
+}
+
+// =============================================================================
+// Unified Context (for new API)
+// =============================================================================
+
+bitflags! {
+    /// Capabilities that determine which methods are available on a context.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ContextCapabilities: u32 {
+        /// Can call set_items() and set_groups()
+        const SET_ITEMS = 0b0000_0001;
+        /// Can call set_loading()
+        const SET_LOADING = 0b0000_0010;
+        /// Can call push(), pop(), dismiss()
+        const NAVIGATION = 0b0000_0100;
+        /// Can call complete(), fail(), notify()
+        const FEEDBACK = 0b0000_1000;
+    }
+}
+
+/// Unified context for the new Lua API.
+///
+/// This context provides all methods, but some require specific capabilities.
+/// Invalid method calls throw Lua errors with clear messages.
+///
+/// ## Capabilities by Handler Type
+///
+/// | Handler | Capabilities |
+/// |---------|--------------|
+/// | search | SET_ITEMS, SET_LOADING |
+/// | get_actions | (none - just returns actions) |
+/// | action handler | NAVIGATION, FEEDBACK |
+pub struct UnifiedContext<'a> {
+    // Read-only properties
+    query: Option<&'a str>,
+    items: Option<&'a [Item]>,
+    cursor_index: Option<usize>,
+    selection: Option<&'a HashSet<String>>,
+    view_id: Option<&'a str>,
+    view_data: &'a serde_json::Value,
+
+    // Effect collection
+    effects: &'a EffectCollector,
+
+    // Runtime capability validation
+    capabilities: ContextCapabilities,
+
+    // Handler type name for error messages
+    handler_type: &'static str,
+}
+
+impl<'a> UnifiedContext<'a> {
+    /// Create a context for search handlers.
+    ///
+    /// Capabilities: SET_ITEMS, SET_LOADING
+    pub fn for_search(
+        query: &'a str,
+        view_id: Option<&'a str>,
+        view_data: &'a serde_json::Value,
+        effects: &'a EffectCollector,
+    ) -> Self {
+        Self {
+            query: Some(query),
+            items: None,
+            cursor_index: None,
+            selection: None,
+            view_id,
+            view_data,
+            effects,
+            capabilities: ContextCapabilities::SET_ITEMS | ContextCapabilities::SET_LOADING,
+            handler_type: "search",
+        }
+    }
+
+    /// Create a context for get_actions handlers.
+    ///
+    /// Capabilities: none (just returns actions)
+    pub fn for_get_actions(
+        item: &'a Item,
+        view_data: &'a serde_json::Value,
+        effects: &'a EffectCollector,
+    ) -> Self {
+        Self {
+            query: None,
+            items: Some(std::slice::from_ref(item)),
+            cursor_index: None,
+            selection: None,
+            view_id: None,
+            view_data,
+            effects,
+            capabilities: ContextCapabilities::empty(),
+            handler_type: "get_actions",
+        }
+    }
+
+    /// Create a context for action handlers.
+    ///
+    /// Capabilities: NAVIGATION, FEEDBACK
+    pub fn for_action(
+        items: &'a [Item],
+        view_data: &'a serde_json::Value,
+        effects: &'a EffectCollector,
+    ) -> Self {
+        Self {
+            query: None,
+            items: Some(items),
+            cursor_index: None,
+            selection: None,
+            view_id: None,
+            view_data,
+            effects,
+            capabilities: ContextCapabilities::NAVIGATION | ContextCapabilities::FEEDBACK,
+            handler_type: "action handler",
+        }
+    }
+
+    /// Create a context with full state access (for root view search).
+    pub fn for_root_search(
+        query: &'a str,
+        items: &'a [Item],
+        cursor_index: usize,
+        selection: &'a HashSet<String>,
+        view_id: Option<&'a str>,
+        view_data: &'a serde_json::Value,
+        effects: &'a EffectCollector,
+    ) -> Self {
+        Self {
+            query: Some(query),
+            items: Some(items),
+            cursor_index: Some(cursor_index),
+            selection: Some(selection),
+            view_id,
+            view_data,
+            effects,
+            capabilities: ContextCapabilities::SET_ITEMS
+                | ContextCapabilities::SET_LOADING
+                | ContextCapabilities::NAVIGATION,
+            handler_type: "root search",
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Read-only Properties
+    // -------------------------------------------------------------------------
+
+    /// Get the current query (if available).
+    pub fn query(&self) -> Option<&str> {
+        self.query
+    }
+
+    /// Get the current items (if available).
+    pub fn items(&self) -> Option<&[Item]> {
+        self.items
+    }
+
+    /// Get the cursor index (if available).
+    pub fn cursor_index(&self) -> Option<usize> {
+        self.cursor_index
+    }
+
+    /// Get the selection (if available).
+    pub fn selection(&self) -> Option<&HashSet<String>> {
+        self.selection
+    }
+
+    /// Get the view ID (if available).
+    pub fn view_id(&self) -> Option<&str> {
+        self.view_id
+    }
+
+    /// Get the view data.
+    pub fn view_data(&self) -> &serde_json::Value {
+        self.view_data
+    }
+
+    // -------------------------------------------------------------------------
+    // SET_ITEMS Capability Methods
+    // -------------------------------------------------------------------------
+
+    /// Set the results as a flat list of items.
+    ///
+    /// Requires: SET_ITEMS capability
+    pub fn set_items(&self, items: Vec<Item>) -> Result<(), ContextError> {
+        self.require_capability(ContextCapabilities::SET_ITEMS, "set_items")?;
+        self.effects
+            .push(Effect::SetGroups(vec![Group { title: None, items }]));
+        Ok(())
+    }
+
+    /// Set the results as grouped items.
+    ///
+    /// Requires: SET_ITEMS capability
+    pub fn set_groups(&self, groups: Vec<Group>) -> Result<(), ContextError> {
+        self.require_capability(ContextCapabilities::SET_ITEMS, "set_groups")?;
+        self.effects.push(Effect::SetGroups(groups));
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // SET_LOADING Capability Methods
+    // -------------------------------------------------------------------------
+
+    /// Set the loading state.
+    ///
+    /// Requires: SET_LOADING capability
+    pub fn set_loading(&self, loading: bool) -> Result<(), ContextError> {
+        self.require_capability(ContextCapabilities::SET_LOADING, "set_loading")?;
+        self.effects.push(Effect::SetLoading(loading));
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // NAVIGATION Capability Methods
+    // -------------------------------------------------------------------------
+
+    /// Push a new view onto the stack.
+    ///
+    /// Requires: NAVIGATION capability
+    pub fn push(&self, spec: ViewSpec) -> Result<(), ContextError> {
+        self.require_capability(ContextCapabilities::NAVIGATION, "push")?;
+        self.effects.push(Effect::PushView(spec));
+        Ok(())
+    }
+
+    /// Pop the current view.
+    ///
+    /// Requires: NAVIGATION capability
+    pub fn pop(&self) -> Result<(), ContextError> {
+        self.require_capability(ContextCapabilities::NAVIGATION, "pop")?;
+        self.effects.push(Effect::Pop);
+        Ok(())
+    }
+
+    /// Dismiss the launcher.
+    ///
+    /// Requires: NAVIGATION capability
+    pub fn dismiss(&self) -> Result<(), ContextError> {
+        self.require_capability(ContextCapabilities::NAVIGATION, "dismiss")?;
+        self.effects.push(Effect::Dismiss);
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // FEEDBACK Capability Methods
+    // -------------------------------------------------------------------------
+
+    /// Mark the action as complete with an optional message.
+    ///
+    /// Requires: FEEDBACK capability
+    pub fn complete(&self, message: Option<String>) -> Result<(), ContextError> {
+        self.require_capability(ContextCapabilities::FEEDBACK, "complete")?;
+        self.effects.push(Effect::Complete {
+            message: message.unwrap_or_default(),
+        });
+        Ok(())
+    }
+
+    /// Mark the action as failed with an error message.
+    ///
+    /// Requires: FEEDBACK capability
+    pub fn fail(&self, error: String) -> Result<(), ContextError> {
+        self.require_capability(ContextCapabilities::FEEDBACK, "fail")?;
+        self.effects.push(Effect::Fail { error });
+        Ok(())
+    }
+
+    /// Show a notification without dismissing.
+    ///
+    /// Requires: FEEDBACK capability
+    pub fn notify(&self, message: String) -> Result<(), ContextError> {
+        self.require_capability(ContextCapabilities::FEEDBACK, "notify")?;
+        self.effects.push(Effect::Notify(message));
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Helper Methods
+    // -------------------------------------------------------------------------
+
+    /// Check if a capability is available.
+    fn require_capability(
+        &self,
+        cap: ContextCapabilities,
+        method: &str,
+    ) -> Result<(), ContextError> {
+        if self.capabilities.contains(cap) {
+            Ok(())
+        } else {
+            Err(ContextError::CapabilityNotAvailable {
+                method: method.to_string(),
+                handler_type: self.handler_type.to_string(),
+            })
+        }
+    }
+}
+
+/// Errors that can occur during context operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ContextError {
+    #[error("ctx:{method}() not available in {handler_type} handler")]
+    CapabilityNotAvailable {
+        method: String,
+        handler_type: String,
+    },
 }
 
 // =============================================================================

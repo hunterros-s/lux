@@ -86,6 +86,19 @@ pub struct KeymapRegistry {
 
     /// Lua function refs by ID (for RunLuaHandler dispatch).
     lua_handlers: RwLock<HashMap<String, LuaFunctionRef>>,
+
+    /// Global hotkeys (system-wide, not GPUI).
+    global_hotkeys: RwLock<HashMap<String, GlobalHotkey>>,
+}
+
+/// A global hotkey (system-wide, outside the app window).
+#[derive(Clone, Debug)]
+pub struct GlobalHotkey {
+    /// Keystroke string (e.g., "cmd+space").
+    pub key: String,
+
+    /// The handler to invoke.
+    pub handler: KeyHandler,
 }
 
 impl KeymapRegistry {
@@ -127,6 +140,52 @@ impl KeymapRegistry {
     /// Get the number of stored Lua handlers.
     pub fn handler_count(&self) -> usize {
         self.lua_handlers.read().len()
+    }
+
+    // =========================================================================
+    // Deletion
+    // =========================================================================
+
+    /// Delete a binding by key and optional view.
+    ///
+    /// Returns `true` if a binding was removed.
+    pub fn del(&self, key: &str, view: Option<&str>) -> bool {
+        let binding_key = (key.to_string(), view.map(|s| s.to_string()));
+        self.bindings.write().remove(&binding_key).is_some()
+    }
+
+    // =========================================================================
+    // Global Hotkeys
+    // =========================================================================
+
+    /// Register a global hotkey (system-wide, outside the app window).
+    ///
+    /// If the same key exists, it's overwritten.
+    pub fn set_global(&self, hotkey: GlobalHotkey) {
+        self.global_hotkeys
+            .write()
+            .insert(hotkey.key.clone(), hotkey);
+    }
+
+    /// Delete a global hotkey.
+    ///
+    /// Returns `true` if a hotkey was removed.
+    pub fn del_global(&self, key: &str) -> bool {
+        self.global_hotkeys.write().remove(key).is_some()
+    }
+
+    /// Take all global hotkeys for platform registration.
+    ///
+    /// This clears the hotkeys from the registry.
+    pub fn take_global_hotkeys(&self) -> Vec<GlobalHotkey> {
+        std::mem::take(&mut *self.global_hotkeys.write())
+            .into_values()
+            .collect()
+    }
+
+    /// Get the number of global hotkeys.
+    pub fn global_hotkey_count(&self) -> usize {
+        self.global_hotkeys.read().len()
     }
 }
 
@@ -193,5 +252,76 @@ mod tests {
         let bindings = registry.take_bindings();
         assert_eq!(bindings.len(), 2);
         assert_eq!(registry.binding_count(), 0);
+    }
+
+    #[test]
+    fn test_keymap_registry_del() {
+        let registry = KeymapRegistry::new();
+
+        registry.set(PendingBinding {
+            key: "ctrl+n".to_string(),
+            handler: KeyHandler::Action("cursor_down".to_string()),
+            view: None,
+        });
+
+        registry.set(PendingBinding {
+            key: "ctrl+n".to_string(),
+            handler: KeyHandler::Action("submit".to_string()),
+            view: Some("file_browser".to_string()),
+        });
+
+        assert_eq!(registry.binding_count(), 2);
+
+        // Delete global binding
+        assert!(registry.del("ctrl+n", None));
+        assert_eq!(registry.binding_count(), 1);
+
+        // Delete non-existent binding
+        assert!(!registry.del("ctrl+n", None));
+
+        // Delete view-specific binding
+        assert!(registry.del("ctrl+n", Some("file_browser")));
+        assert_eq!(registry.binding_count(), 0);
+    }
+
+    #[test]
+    fn test_global_hotkeys() {
+        let registry = KeymapRegistry::new();
+
+        registry.set_global(GlobalHotkey {
+            key: "cmd+space".to_string(),
+            handler: KeyHandler::Action("toggle".to_string()),
+        });
+
+        assert_eq!(registry.global_hotkey_count(), 1);
+
+        // Override same key
+        registry.set_global(GlobalHotkey {
+            key: "cmd+space".to_string(),
+            handler: KeyHandler::Action("show".to_string()),
+        });
+
+        assert_eq!(registry.global_hotkey_count(), 1);
+
+        // Add another hotkey
+        registry.set_global(GlobalHotkey {
+            key: "cmd+shift+space".to_string(),
+            handler: KeyHandler::Action("clipboard".to_string()),
+        });
+
+        assert_eq!(registry.global_hotkey_count(), 2);
+
+        // Delete hotkey
+        assert!(registry.del_global("cmd+space"));
+        assert_eq!(registry.global_hotkey_count(), 1);
+
+        // Delete non-existent
+        assert!(!registry.del_global("cmd+space"));
+
+        // Take all
+        let hotkeys = registry.take_global_hotkeys();
+        assert_eq!(hotkeys.len(), 1);
+        assert_eq!(hotkeys[0].key, "cmd+shift+space");
+        assert_eq!(registry.global_hotkey_count(), 0);
     }
 }

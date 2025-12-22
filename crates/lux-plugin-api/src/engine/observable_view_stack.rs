@@ -285,6 +285,7 @@ mod tests {
             title: Some(title.to_string()),
             placeholder: None,
             source_fn: LuaFunctionRef::new(format!("test:source:{}", title)),
+            get_actions_fn: None,
             selection: SelectionMode::Single,
             on_select_fn: None,
             on_submit_fn: None,

@@ -126,11 +126,14 @@ impl ActionMenuState {
 /// An action in the menu.
 #[derive(Debug, Clone)]
 pub struct ActionMenuItem {
-    /// Plugin that owns this action.
-    pub plugin: String,
+    /// View that provides this action.
+    pub view_id: String,
 
-    /// Action index within the plugin.
-    pub action_index: usize,
+    /// Action ID within the view.
+    pub action_id: String,
+
+    /// Lua registry key for the handler function.
+    pub handler_key: Option<String>,
 
     /// Display title.
     pub title: String,
@@ -635,14 +638,16 @@ mod tests {
     fn test_action_menu_navigation() {
         let actions = vec![
             ActionMenuItem {
-                plugin: "test".to_string(),
-                action_index: 0,
+                view_id: "test".to_string(),
+                action_id: "open".to_string(),
+                handler_key: None,
                 title: "Open".to_string(),
                 icon: None,
             },
             ActionMenuItem {
-                plugin: "test".to_string(),
-                action_index: 1,
+                view_id: "test".to_string(),
+                action_id: "delete".to_string(),
+                handler_key: None,
                 title: "Delete".to_string(),
                 icon: None,
             },

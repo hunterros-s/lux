@@ -22,6 +22,8 @@ pub struct ActionInfo {
     pub icon: Option<String>,
 }
 
+use crate::Groups;
+
 /// Result returned by action execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -48,6 +50,9 @@ pub enum ActionResult {
 
     /// Keep launcher open, continue.
     Continue,
+
+    /// Update displayed results (e.g., from keybinding handler).
+    UpdateResults { groups: Groups },
 
     /// Show progress message.
     Progress { message: String },
