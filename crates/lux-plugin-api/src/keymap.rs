@@ -47,6 +47,54 @@ pub enum KeyHandler {
 }
 
 // =============================================================================
+// Global Hotkey Handler
+// =============================================================================
+
+/// Built-in global hotkey actions.
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum BuiltInHotkey {
+    /// Toggle launcher visibility.
+    ToggleLauncher,
+}
+
+impl BuiltInHotkey {
+    /// Parse a built-in hotkey action from a string name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "toggle_launcher" => Some(Self::ToggleLauncher),
+            _ => None,
+        }
+    }
+
+    /// Get the string name of this action.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ToggleLauncher => "toggle_launcher",
+        }
+    }
+}
+
+/// Handler for global system hotkeys.
+#[derive(Clone, Debug)]
+pub enum GlobalHandler {
+    /// Built-in action (e.g., toggle_launcher).
+    BuiltIn(BuiltInHotkey),
+
+    /// Lua function to call when hotkey fires.
+    Function { id: String },
+}
+
+/// A pending global hotkey registration.
+#[derive(Clone, Debug)]
+pub struct PendingHotkey {
+    /// Keystroke string (e.g., "cmd+shift+space").
+    pub key: String,
+
+    /// Handler to invoke when hotkey fires.
+    pub handler: GlobalHandler,
+}
+
+// =============================================================================
 // Pending Binding
 // =============================================================================
 
@@ -59,8 +107,16 @@ pub struct PendingBinding {
     /// The handler to invoke.
     pub handler: KeyHandler,
 
-    /// Optional view ID for view-specific bindings (e.g., "file_browser").
-    /// None means global binding.
+    /// Optional GPUI context predicate (e.g., "Launcher", "SearchInput").
+    /// Defaults to "Launcher" if None.
+    ///
+    /// Common contexts:
+    /// - "Launcher" - Main launcher navigation
+    /// - "SearchInput" - Text input field
+    pub context: Option<String>,
+
+    /// Optional Lua view ID for view-specific bindings (e.g., "file_browser").
+    /// Combined with context to form: "{context} && view_id == {view}"
     pub view: Option<String>,
 }
 
@@ -68,8 +124,8 @@ pub struct PendingBinding {
 // Binding Key (for deduplication)
 // =============================================================================
 
-/// Composite key for deduplication: (keystroke, view).
-type BindingKey = (String, Option<String>);
+/// Composite key for deduplication: (keystroke, context, view).
+type BindingKey = (String, Option<String>, Option<String>);
 
 // =============================================================================
 // Keymap Registry
@@ -79,10 +135,15 @@ type BindingKey = (String, Option<String>);
 ///
 /// The registry uses a HashMap keyed by (keystroke, view) to ensure
 /// later bindings override earlier ones for the same key/view combination.
+///
+/// Also manages global system hotkeys separately from GPUI bindings.
 #[derive(Default)]
 pub struct KeymapRegistry {
-    /// Pending bindings - HashMap ensures later bindings override earlier.
+    /// Pending GPUI bindings - HashMap ensures later bindings override earlier.
     bindings: RwLock<HashMap<BindingKey, PendingBinding>>,
+
+    /// Pending global hotkeys - keyed by keystroke for deduplication.
+    hotkeys: RwLock<HashMap<String, PendingHotkey>>,
 
     /// Lua function refs by ID (for RunLuaHandler dispatch).
     lua_handlers: RwLock<HashMap<String, LuaFunctionRef>>,
@@ -107,10 +168,29 @@ impl KeymapRegistry {
         Self::default()
     }
 
-    /// Add a binding. If same (key, view) exists, it's overwritten.
+    /// Add a binding. If same (key, context, view) exists, it's overwritten.
     pub fn set(&self, binding: PendingBinding) {
-        let key = (binding.key.clone(), binding.view.clone());
+        let key = (
+            binding.key.clone(),
+            binding.context.clone(),
+            binding.view.clone(),
+        );
         self.bindings.write().insert(key, binding);
+    }
+
+    /// Remove a binding by key, context, and optional view.
+    ///
+    /// Returns `true` if a binding was removed.
+    ///
+    /// **Note:** This only works at startup time. Once bindings are registered
+    /// with GPUI via `take_bindings()`, removal requires an app restart.
+    pub fn del(&self, key: &str, context: Option<&str>, view: Option<&str>) -> bool {
+        let binding_key = (
+            key.to_string(),
+            context.map(|s| s.to_string()),
+            view.map(|s| s.to_string()),
+        );
+        self.bindings.write().remove(&binding_key).is_some()
     }
 
     /// Store a Lua function handler.
@@ -209,28 +289,58 @@ mod tests {
         registry.set(PendingBinding {
             key: "ctrl+n".to_string(),
             handler: KeyHandler::Action("cursor_down".to_string()),
+            context: Some("Launcher".to_string()),
             view: None,
         });
 
         assert_eq!(registry.binding_count(), 1);
 
-        // Override same key
+        // Override same key + context + view
         registry.set(PendingBinding {
             key: "ctrl+n".to_string(),
             handler: KeyHandler::Action("cursor_up".to_string()),
+            context: Some("Launcher".to_string()),
             view: None,
         });
 
         assert_eq!(registry.binding_count(), 1);
 
-        // Different view is a different binding
+        // Different context is a different binding
         registry.set(PendingBinding {
             key: "ctrl+n".to_string(),
             handler: KeyHandler::Action("submit".to_string()),
-            view: Some("file_browser".to_string()),
+            context: Some("SearchInput".to_string()),
+            view: None,
         });
 
         assert_eq!(registry.binding_count(), 2);
+
+        // Different view is also a different binding
+        registry.set(PendingBinding {
+            key: "ctrl+n".to_string(),
+            handler: KeyHandler::Action("delete".to_string()),
+            context: Some("Launcher".to_string()),
+            view: Some("file_browser".to_string()),
+        });
+
+        assert_eq!(registry.binding_count(), 3);
+    }
+
+    #[test]
+    fn test_keymap_registry_del() {
+        let registry = KeymapRegistry::new();
+
+        registry.set(PendingBinding {
+            key: "ctrl+n".to_string(),
+            handler: KeyHandler::Action("cursor_down".to_string()),
+            context: Some("Launcher".to_string()),
+            view: None,
+        });
+
+        assert_eq!(registry.binding_count(), 1);
+        assert!(registry.del("ctrl+n", Some("Launcher"), None));
+        assert_eq!(registry.binding_count(), 0);
+        assert!(!registry.del("ctrl+n", Some("Launcher"), None)); // Already deleted
     }
 
     #[test]
@@ -240,12 +350,14 @@ mod tests {
         registry.set(PendingBinding {
             key: "ctrl+n".to_string(),
             handler: KeyHandler::Action("cursor_down".to_string()),
+            context: Some("Launcher".to_string()),
             view: None,
         });
 
         registry.set(PendingBinding {
             key: "ctrl+p".to_string(),
             handler: KeyHandler::Action("cursor_up".to_string()),
+            context: Some("Launcher".to_string()),
             view: None,
         });
 

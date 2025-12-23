@@ -170,7 +170,9 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
     //
     // Examples:
     //   lux.keymap.set("ctrl+n", "cursor_down")
-    //   lux.keymap.set("ctrl+o", "open_finder", { view = "files" })
+    //   lux.keymap.set("ctrl+n", "cursor_down", { context = "Launcher" })
+    //   lux.keymap.set("enter", "submit", { context = "SearchInput" })
+    //   lux.keymap.set("ctrl+o", "open_finder", { context = "Launcher", view = "files" })
     //   lux.keymap.set("ctrl+d", function(ctx) ... end, { view = "files" })
     {
         let registry = Arc::clone(&registry);
@@ -201,7 +203,14 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
 
             // Third arg: opts (optional)
             let opts: Option<Table> = args_iter.next().and_then(|v| lua.unpack(v).ok());
-            let view = opts.and_then(|t| t.get::<Option<String>>("view").ok().flatten());
+            let (context, view) = if let Some(ref t) = opts {
+                (
+                    t.get::<Option<String>>("context").ok().flatten(),
+                    t.get::<Option<String>>("view").ok().flatten(),
+                )
+            } else {
+                (None, None)
+            };
 
             // Parse handler
             let handler = if let Ok(action_name) = lua.unpack::<String>(handler_val.clone()) {
@@ -219,7 +228,12 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
                 ));
             };
 
-            registry.keymap().set(PendingBinding { key, handler, view });
+            registry.keymap().set(PendingBinding {
+                key,
+                handler,
+                context,
+                view,
+            });
             Ok(())
         })?;
         keymap_table.set("set", set_fn)?;

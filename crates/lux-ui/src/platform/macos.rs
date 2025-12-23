@@ -9,6 +9,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventMask, NSEventModifierFlags,
 };
 use objc2_foundation::MainThreadMarker;
+use parking_lot::RwLock;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -225,6 +226,144 @@ impl HotkeyManager {
 }
 
 // =============================================================================
+// Multi-Hotkey Manager
+// =============================================================================
+
+/// Callback type for hotkey handlers.
+pub type HotkeyCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
+/// Entry for a registered hotkey.
+struct HotkeyEntry {
+    hotkey: Hotkey,
+    callback: HotkeyCallback,
+}
+
+/// Manager for multiple global hotkeys.
+///
+/// Unlike `HotkeyManager` which supports a single hotkey, this supports many.
+/// Uses a single pair of NSEvent monitors that check against all registered hotkeys.
+///
+/// ## Thread Safety
+///
+/// Callbacks are invoked on the main thread. Use a channel to send events
+/// to the GPUI context if needed.
+///
+/// ## Usage
+///
+/// ```ignore
+/// let manager = MultiHotkeyManager::new()?;
+/// manager.register(parse_hotkey("cmd+space")?, Arc::new(|| {
+///     println!("Hotkey pressed!");
+/// }));
+/// ```
+pub struct MultiHotkeyManager {
+    /// Global event monitor - fires when app is NOT focused.
+    _global_monitor: Retained<AnyObject>,
+    /// Local event monitor - fires when app IS focused.
+    _local_monitor: Retained<AnyObject>,
+    /// The blocks must be kept alive alongside the monitors.
+    _global_block: RcBlock<dyn Fn(NonNull<NSEvent>)>,
+    _local_block: RcBlock<dyn Fn(NonNull<NSEvent>) -> *mut NSEvent>,
+    /// Registered hotkeys (shared with monitor blocks).
+    hotkeys: Arc<RwLock<Vec<HotkeyEntry>>>,
+}
+
+impl MultiHotkeyManager {
+    /// Create a new empty multi-hotkey manager.
+    ///
+    /// Returns `None` if the monitors couldn't be created (e.g., missing
+    /// accessibility permissions for the global monitor).
+    pub fn new() -> Option<Self> {
+        let hotkeys: Arc<RwLock<Vec<HotkeyEntry>>> = Arc::new(RwLock::new(Vec::new()));
+
+        // Create global monitor block (fires when app is NOT focused)
+        let global_block = {
+            let hotkeys_clone = hotkeys.clone();
+
+            RcBlock::new(move |event: NonNull<NSEvent>| {
+                let entries = hotkeys_clone.read();
+                for entry in entries.iter() {
+                    if entry.hotkey.matches_ptr(event) {
+                        (entry.callback)();
+                        break; // First match wins
+                    }
+                }
+            })
+        };
+
+        // Create local monitor block (fires when app IS focused)
+        let local_block = {
+            let hotkeys_clone = hotkeys.clone();
+
+            RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+                let entries = hotkeys_clone.read();
+                for entry in entries.iter() {
+                    if entry.hotkey.matches_ptr(event) {
+                        (entry.callback)();
+                        return std::ptr::null_mut(); // Consume the event
+                    }
+                }
+                event.as_ptr() // Pass through unmatched events
+            })
+        };
+
+        // Register global monitor
+        let global_monitor = unsafe {
+            NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+                NSEventMask::KeyDown,
+                &global_block,
+            )
+        }?;
+
+        // Register local monitor
+        let local_monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::KeyDown,
+                &local_block,
+            )
+        }?;
+
+        Some(Self {
+            _global_monitor: global_monitor,
+            _local_monitor: local_monitor,
+            _global_block: global_block,
+            _local_block: local_block,
+            hotkeys,
+        })
+    }
+
+    /// Register a hotkey with its callback.
+    ///
+    /// The callback will be invoked on the main thread when the hotkey is pressed.
+    pub fn register(&self, hotkey: Hotkey, callback: HotkeyCallback) {
+        self.hotkeys.write().push(HotkeyEntry { hotkey, callback });
+        tracing::debug!(
+            "Registered hotkey: modifiers={:?}, keycode={}",
+            hotkey.modifiers,
+            hotkey.keycode
+        );
+    }
+
+    /// Register a hotkey from a string like "cmd+space".
+    ///
+    /// Returns `true` if the hotkey was successfully parsed and registered.
+    pub fn register_from_str(&self, key: &str, callback: HotkeyCallback) -> bool {
+        if let Some(hotkey) = parse_hotkey(key) {
+            self.register(hotkey, callback);
+            true
+        } else {
+            tracing::warn!("Failed to parse hotkey string: '{}'", key);
+            false
+        }
+    }
+
+    /// Get the number of registered hotkeys.
+    pub fn count(&self) -> usize {
+        self.hotkeys.read().len()
+    }
+}
+
+// =============================================================================
 // Key Code Constants
 // =============================================================================
 
@@ -383,4 +522,8 @@ mod tests {
         assert!(parse_hotkey("invalid").is_none());
         assert!(parse_hotkey("cmd+invalid").is_none());
     }
+
+    // Note: MultiHotkeyManager tests require running on macOS with accessibility
+    // permissions. The actual hotkey monitoring cannot be tested in unit tests,
+    // but we can test the hotkey parsing and registration logic.
 }
