@@ -470,10 +470,8 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
             }
 
             if let Some(env_table) = env {
-                for pair in env_table.pairs::<String, String>() {
-                    if let Ok((key, value)) = pair {
-                        cmd.env(key, value);
-                    }
+                for (key, value) in env_table.pairs::<String, String>().flatten() {
+                    cmd.env(key, value);
                 }
             }
 
@@ -812,15 +810,11 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
     {
         let item_id_fn = lua.create_function(|_lua, item: Table| {
             // Try to get 'id' field first, then fall back to 'title'
-            if let Ok(id) = item.get::<Option<String>>("id") {
-                if let Some(id) = id {
-                    return Ok(id);
-                }
+            if let Ok(Some(id)) = item.get::<Option<String>>("id") {
+                return Ok(id);
             }
-            if let Ok(title) = item.get::<Option<String>>("title") {
-                if let Some(title) = title {
-                    return Ok(title);
-                }
+            if let Ok(Some(title)) = item.get::<Option<String>>("title") {
+                return Ok(title);
             }
             Err(mlua::Error::RuntimeError(
                 "item_id: item must have 'id' or 'title' field".to_string(),
@@ -841,10 +835,8 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
                     let new_group = lua.create_table()?;
 
                     // Copy title if present
-                    if let Ok(title) = group.get::<Option<String>>("title") {
-                        if let Some(t) = title {
-                            new_group.set("title", t)?;
-                        }
+                    if let Ok(Some(t)) = group.get::<Option<String>>("title") {
+                        new_group.set("title", t)?;
                     }
 
                     // Map items

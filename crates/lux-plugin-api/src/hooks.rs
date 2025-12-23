@@ -243,8 +243,7 @@ impl Default for HookRegistry {
 ///
 /// Returns None for global hooks like "search" or "get_actions".
 fn parse_view_hook_path(path: &str) -> Option<(&str, &str)> {
-    if path.starts_with("views.") {
-        let rest = &path[6..]; // Skip "views."
+    if let Some(rest) = path.strip_prefix("views.") {
         if let Some(dot_pos) = rest.find('.') {
             let view_id = &rest[..dot_pos];
             let hook_name = &rest[dot_pos + 1..];

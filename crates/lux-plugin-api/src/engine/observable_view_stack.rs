@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn test_modify_top_no_broadcast() {
         let stack = ObservableViewStack::new();
-        let rx = stack.subscribe();
+        let _rx = stack.subscribe();
 
         stack.push(test_instance("View 1"));
 
