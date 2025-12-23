@@ -274,7 +274,9 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
                 (None, None)
             };
 
-            let removed = registry.keymap().del(&key, context.as_deref(), view.as_deref());
+            let removed = registry
+                .keymap()
+                .del(&key, context.as_deref(), view.as_deref());
             Ok(removed)
         })?;
         keymap_table.set("del", del_fn)?;
