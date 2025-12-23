@@ -38,6 +38,12 @@ pub enum Effect {
     /// Mark action as failed.
     Fail { error: String },
 
+    /// Show a notification (does not dismiss).
+    Notify(String),
+
+    /// Set loading state.
+    SetLoading(bool),
+
     // =========================================================================
     // Selection Effects (for on_select hook)
     // =========================================================================
@@ -62,6 +68,7 @@ pub struct ViewSpec {
     pub(crate) title: Option<String>,
     pub(crate) placeholder: Option<String>,
     pub(crate) source_fn_key: String,
+    pub(crate) get_actions_fn_key: Option<String>,
     pub(crate) on_select_fn_key: Option<String>,
     pub(crate) on_submit_fn_key: Option<String>,
     pub(crate) selection_mode: SelectionMode,
@@ -79,6 +86,7 @@ impl ViewSpec {
             title: None,
             placeholder: None,
             source_fn_key,
+            get_actions_fn_key: None,
             on_select_fn_key: None,
             on_submit_fn_key: None,
             selection_mode: SelectionMode::Single,
@@ -108,6 +116,13 @@ impl ViewSpec {
     /// Set the selection mode.
     pub fn with_selection_mode(mut self, mode: SelectionMode) -> Self {
         self.selection_mode = mode;
+        self
+    }
+
+    /// Set the get_actions callback key.
+    pub fn with_get_actions(mut self, key: String) -> Self {
+        self.registry_keys.push(key.clone());
+        self.get_actions_fn_key = Some(key);
         self
     }
 

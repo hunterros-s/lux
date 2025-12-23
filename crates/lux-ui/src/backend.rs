@@ -69,8 +69,8 @@ pub trait Backend: Send + Sync {
     /// View stack changes are also broadcast via subscription.
     fn execute_action(
         &self,
-        plugin: String,
-        action_index: usize,
+        view_id: String,
+        action_id: String,
         items: Vec<Item>,
     ) -> BoxFuture<'static, Result<ActionResult, BackendError>>;
 
@@ -191,8 +191,8 @@ impl Backend for RuntimeBackend {
 
     fn execute_action(
         &self,
-        plugin: String,
-        action_index: usize,
+        view_id: String,
+        action_id: String,
         items: Vec<Item>,
     ) -> BoxFuture<'static, Result<ActionResult, BackendError>> {
         let engine = self.engine.clone();
@@ -204,7 +204,7 @@ impl Backend for RuntimeBackend {
             runtime
                 .with_lua_timeout(timeout, move |lua| {
                     engine
-                        .execute_action(lua, &plugin, action_index, &items)
+                        .execute_action(lua, &view_id, &action_id, &items)
                         .map_err(|e| e.to_string())
                 })
                 .await
@@ -373,8 +373,8 @@ pub mod mock {
 
         fn execute_action(
             &self,
-            _plugin: String,
-            _action_index: usize,
+            _view_id: String,
+            _action_id: String,
             _items: Vec<Item>,
         ) -> BoxFuture<'static, Result<ActionResult, BackendError>> {
             Box::pin(async move { Ok(ActionResult::Dismiss) })
@@ -451,7 +451,7 @@ mod tests {
         let backend = MockBackend::new();
 
         let result = backend
-            .execute_action("test".to_string(), 0, test_items())
+            .execute_action("test".to_string(), "action-0".to_string(), test_items())
             .await
             .unwrap();
 

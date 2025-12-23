@@ -77,11 +77,14 @@ impl SearchInput {
     }
 
     /// Set the text content.
+    ///
+    /// Emits `SearchInputEvent::Changed` so subscribers are notified.
     pub fn set_text(&self, text: impl Into<String>, cx: &mut App) {
         self.editor.update(cx, |editor, cx| {
             editor.text = text.into();
             editor.selected_range = editor.text.len()..editor.text.len();
             editor.marked_range = None;
+            cx.emit(SearchInputEvent::Changed(editor.text.clone()));
             cx.notify();
         });
     }

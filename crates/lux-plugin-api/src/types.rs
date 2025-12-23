@@ -1,6 +1,8 @@
 //! Core types for the Lux Plugin API.
 //!
-//! This module defines the data structures that match the Plugin API Specification v0.1.
+//! This module defines the data structures for views, function references,
+//! and other core API types.
+//!
 //! Common types (Item, Group, SelectionMode, ActionResult) are re-exported from lux_core.
 
 use mlua::{Function, Lua, Result as LuaResult};
@@ -59,135 +61,6 @@ impl LuaFunctionRef {
 }
 
 // =============================================================================
-// Plugin Components
-// =============================================================================
-
-/// A trigger intercepts queries before they reach the current view's source.
-///
-/// Triggers enable prefix-based commands (`:git`), calculators (`= 1+1`),
-/// and other query transformations.
-pub struct Trigger {
-    /// Match function: `match(ctx) -> bool`
-    /// If provided, called to determine if trigger should activate.
-    pub match_fn: Option<LuaFunctionRef>,
-
-    /// Prefix shorthand. If provided, trigger activates when query starts with prefix.
-    /// E.g., prefix = ":" activates for queries like ":git status"
-    pub prefix: Option<String>,
-
-    /// Run function: `run(ctx)` - handles the matched query.
-    pub run_fn: LuaFunctionRef,
-}
-
-impl std::fmt::Debug for Trigger {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Trigger")
-            .field("prefix", &self.prefix)
-            .field("has_match_fn", &self.match_fn.is_some())
-            .finish()
-    }
-}
-
-/// A source is a search provider that produces items.
-pub struct Source {
-    /// Optional identifier for debugging/logging.
-    pub name: Option<String>,
-
-    /// If true, contributes to root view.
-    pub root: bool,
-
-    /// Group title when contributing to root.
-    pub group: Option<String>,
-
-    /// Search function: `search(ctx) -> Groups`
-    pub search_fn: LuaFunctionRef,
-
-    /// Milliseconds to wait after typing stops before calling search.
-    pub debounce_ms: u32,
-
-    /// Minimum query length before calling search.
-    pub min_query_length: u32,
-}
-
-impl std::fmt::Debug for Source {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Source")
-            .field("name", &self.name)
-            .field("root", &self.root)
-            .field("group", &self.group)
-            .field("debounce_ms", &self.debounce_ms)
-            .field("min_query_length", &self.min_query_length)
-            .finish()
-    }
-}
-
-/// An action operates on one or more items.
-pub struct Action {
-    /// Unique identifier.
-    pub id: String,
-
-    /// Display text in action list.
-    pub title: String,
-
-    /// Icon identifier.
-    pub icon: Option<String>,
-
-    /// If true, appears for multi-select.
-    pub bulk: bool,
-
-    /// Applies function: `applies(ctx) -> bool`
-    pub applies_fn: LuaFunctionRef,
-
-    /// Run function: `run(ctx)`
-    pub run_fn: LuaFunctionRef,
-}
-
-impl std::fmt::Debug for Action {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Action")
-            .field("id", &self.id)
-            .field("title", &self.title)
-            .field("icon", &self.icon)
-            .field("bulk", &self.bulk)
-            .finish()
-    }
-}
-
-// =============================================================================
-// Plugin
-// =============================================================================
-
-/// A plugin is a Lua module that returns a table with metadata and registrations.
-pub struct Plugin {
-    /// Unique identifier for the plugin.
-    pub name: String,
-
-    /// Query hooks that intercept input.
-    pub triggers: Vec<Trigger>,
-
-    /// Search providers that produce items.
-    pub sources: Vec<Source>,
-
-    /// Operations that act on items.
-    pub actions: Vec<Action>,
-
-    /// Called when plugin loads, receives user config.
-    pub setup_fn: Option<LuaFunctionRef>,
-}
-
-impl std::fmt::Debug for Plugin {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Plugin")
-            .field("name", &self.name)
-            .field("triggers_count", &self.triggers.len())
-            .field("sources_count", &self.sources.len())
-            .field("actions_count", &self.actions.len())
-            .field("has_setup", &self.setup_fn.is_some())
-            .finish()
-    }
-}
-
-// =============================================================================
 // View
 // =============================================================================
 
@@ -210,6 +83,9 @@ pub struct View {
     /// Source function: `source(ctx) -> Groups`
     pub source_fn: LuaFunctionRef,
 
+    /// Get actions function: `get_actions(item, ctx) -> Actions`
+    pub get_actions_fn: Option<LuaFunctionRef>,
+
     /// Selection mode.
     pub selection: SelectionMode,
 
@@ -230,6 +106,7 @@ impl std::fmt::Debug for View {
             .field("title", &self.title)
             .field("placeholder", &self.placeholder)
             .field("selection", &self.selection)
+            .field("has_get_actions", &self.get_actions_fn.is_some())
             .field("has_on_select", &self.on_select_fn.is_some())
             .field("has_on_submit", &self.on_submit_fn.is_some())
             .finish()
@@ -265,30 +142,6 @@ impl ViewInstance {
             view,
             registry_keys,
         }
-    }
-}
-
-// =============================================================================
-// Trigger Results
-// =============================================================================
-
-/// Result from running a trigger.
-#[derive(Debug, Default)]
-pub struct TriggerResult {
-    /// Results added via ctx.add_results().
-    pub added: Groups,
-
-    /// View pushed via ctx.push(), if any.
-    pub pushed_view: Option<View>,
-
-    /// Whether ctx.dismiss() was called.
-    pub dismissed: bool,
-}
-
-impl TriggerResult {
-    /// Create an empty result.
-    pub fn empty() -> Self {
-        Self::default()
     }
 }
 

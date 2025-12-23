@@ -542,20 +542,10 @@ impl LauncherPanel {
 
         match result {
             Ok(groups) => {
-                let total_items: usize = groups.iter().map(|g| g.items.len()).sum();
-                tracing::debug!(
-                    "apply_search_results: received {} groups with {} total items",
-                    groups.len(),
-                    total_items
-                );
                 view_display.set_groups(groups);
-                tracing::debug!(
-                    "apply_search_results: after set_groups, {} flat entries",
-                    view_display.flat_entries.len()
-                );
             }
             Err(e) => {
-                tracing::debug!("Search failed: {}", e);
+                tracing::error!("Search failed: {}", e);
             }
         }
 
@@ -587,8 +577,9 @@ impl LauncherPanel {
                 let actions: Vec<ActionMenuItem> = action_infos
                     .into_iter()
                     .map(|info| ActionMenuItem {
-                        plugin: info.plugin_name,
-                        action_index: info.action_index,
+                        view_id: info.view_id,
+                        action_id: info.id,
+                        handler_key: info.handler_key,
                         title: info.title,
                         icon: info.icon,
                     })
@@ -619,13 +610,42 @@ impl LauncherPanel {
             return;
         }
 
+        // If action menu is open, execute the selected action from it
+        if let Some(action_menu) = self.action_menu.take() {
+            if let Some(action) = action_menu.selected_action() {
+                let action = action.clone();
+                let backend = self.backend.clone();
+                cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                    // Use handler_key if available, otherwise fall back to action_id
+                    let action_id = action
+                        .handler_key
+                        .unwrap_or_else(|| action.action_id.clone());
+                    let result = backend
+                        .execute_action(action.view_id, action_id, items)
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.apply_action_result(result, cx);
+                    });
+                })
+                .detach();
+            }
+            cx.notify();
+            return;
+        }
+
+        // No action menu - fetch actions fresh and execute the first one
         let backend = self.backend.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let actions = backend.get_actions(items.clone()).await;
             if let Ok(action_infos) = actions {
                 if let Some(first) = action_infos.first() {
+                    // Use handler_key if available, otherwise fall back to id
+                    let action_id = first
+                        .handler_key
+                        .clone()
+                        .unwrap_or_else(|| first.id.clone());
                     let result = backend
-                        .execute_action(first.plugin_name.clone(), first.action_index, items)
+                        .execute_action(first.view_id.clone(), action_id, items)
                         .await;
                     let _ = this.update(cx, |this, cx| {
                         this.apply_action_result(result, cx);
@@ -659,6 +679,13 @@ impl LauncherPanel {
                 if let Some(display) = self.view_states.last() {
                     let query = display.query.clone();
                     self.trigger_search(query, cx);
+                }
+            }
+            Ok(ActionResult::UpdateResults { groups }) => {
+                // Update displayed results directly (e.g., from keybinding handler)
+                if let Some(display) = self.view_states.last_mut() {
+                    display.set_groups(groups);
+                    cx.notify();
                 }
             }
             Ok(ActionResult::Complete { message, .. }) => {

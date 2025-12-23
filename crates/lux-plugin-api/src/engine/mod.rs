@@ -1,8 +1,7 @@
 //! Query Engine
 //!
-//! The QueryEngine orchestrates the Plugin API execution flow:
-//! - Trigger matching and execution
-//! - Source searching and result aggregation
+//! The QueryEngine orchestrates the view-based execution flow:
+//! - View source searching
 //! - Action filtering and execution
 //! - View stack management
 //!
@@ -12,31 +11,10 @@
 //! User types query
 //!        │
 //!        ▼
-//! ┌──────────────────┐
-//! │ Test all triggers │
-//! │ (match or prefix) │
-//! └────────┬─────────┘
-//!          │
-//!     ┌────┴────┐
-//!     │         │
-//!     ▼         ▼
-//! Triggers    No triggers
-//! matched     matched
-//!     │         │
-//!     ▼         ▼
-//! Run all    Current view's
-//! triggers   source(ctx)
-//!     │         │
-//!     │    ┌────┘
-//!     ▼    ▼
-//! Merge results
-//! (add_results + source)
-//!     │
-//!     ▼
-//! If any push() called,
-//! switch to pushed view
-//!     │
-//!     ▼
+//! Current view's
+//! search(query, ctx)
+//!        │
+//!        ▼
 //! Return Groups to frontend
 //! ```
 
@@ -105,37 +83,30 @@ impl QueryEngine {
 
     /// Initialize with the root view.
     ///
-    /// This should be called after plugins are loaded to set up the initial view.
-    /// Broadcasts the new state to subscribers.
-    pub fn initialize(&self, lua: &Lua) {
+    /// Uses the custom root view if set via `lux.set_root()`, otherwise
+    /// creates an empty default view.
+    pub fn initialize(&self, _lua: &Lua) {
         // Clear any existing views
         self.view_stack.clear();
 
-        // Create the default root view and push it (auto-broadcasts)
-        let root_view = self.create_default_root_view(lua);
+        // Use custom root view if set, otherwise create empty default
+        let root_view = self.registry.take_root_view().unwrap_or_else(|| {
+            tracing::warn!("No root view set - using empty default");
+            View {
+                id: None,
+                title: None,
+                placeholder: Some("Search...".to_string()),
+                source_fn: LuaFunctionRef::new("empty:source".to_string()),
+                get_actions_fn: None,
+                selection: SelectionMode::Single,
+                on_select_fn: None,
+                on_submit_fn: None,
+                view_data: serde_json::Value::Null,
+            }
+        });
+
         self.view_stack.push(ViewInstance::new(root_view));
-
         tracing::debug!("QueryEngine initialized with root view");
-    }
-
-    /// Create the default root view that aggregates all root sources.
-    fn create_default_root_view(&self, _lua: &Lua) -> View {
-        // Create a placeholder source function
-        // The actual implementation will call search_root_sources
-        let source_key = format!("engine:root_view:source:{}", uuid::Uuid::new_v4());
-
-        // We can't easily create a Lua function here that calls back to Rust,
-        // so we'll use a special marker and handle it in search()
-        View {
-            id: None, // Root view has no ID
-            title: None,
-            placeholder: Some("Search...".to_string()),
-            source_fn: LuaFunctionRef::new(source_key),
-            selection: SelectionMode::Single,
-            on_select_fn: None,
-            on_submit_fn: None,
-            view_data: serde_json::Value::Null,
-        }
     }
 
     // =========================================================================
@@ -179,13 +150,7 @@ impl QueryEngine {
 
     /// Execute a search query.
     ///
-    /// This is the main entry point for the query flow:
-    /// 1. Increment query generation (for async cancellation)
-    /// 2. Test all triggers
-    /// 3. If triggers match, run them and collect results
-    /// 4. If no triggers or no push, run current view's source
-    /// 5. Handle any view push/replace from triggers
-    /// 6. Return merged results
+    /// Runs the current view's search function and returns the results.
     pub fn search(&self, lua: &Lua, query: &str) -> Result<Groups, String> {
         // Increment generation for async cancellation
         {
@@ -193,44 +158,8 @@ impl QueryEngine {
             *gen += 1;
         }
 
-        let mut all_results = Groups::new();
-        let mut view_pushed = false;
-
-        // Step 1: Find and run matching triggers
-        let matching_triggers = engine_impl::find_matching_triggers(&self.registry, lua, query)?;
-
-        for (plugin_name, trigger_index) in matching_triggers {
-            // Run trigger and get effects
-            let effects =
-                engine_impl::run_trigger(&self.registry, lua, &plugin_name, trigger_index, query)?;
-
-            // Apply effects and get result
-            let result = self.apply_effects(lua, effects);
-
-            // Collect groups from SetGroups effects
-            if let Some(groups) = result.groups {
-                all_results.extend(groups);
-            }
-
-            // Check if a view was pushed (stack grew)
-            if self.view_stack.len() > 1 {
-                view_pushed = true;
-            }
-
-            // Handle dismiss
-            if result.dismissed {
-                return Ok(all_results);
-            }
-        }
-
-        // Step 2: If no view was pushed, run current view's source
-        if !view_pushed {
-            let source_results =
-                engine_impl::run_current_view_source(&self.registry, &self.view_stack, lua, query)?;
-            all_results.extend(source_results);
-        }
-
-        Ok(all_results)
+        // Run current view's source
+        engine_impl::run_current_view_source(&self.registry, &self.view_stack, lua, query)
     }
 
     // =========================================================================
@@ -238,31 +167,55 @@ impl QueryEngine {
     // =========================================================================
 
     /// Get actions that apply to the given items.
+    ///
+    /// Calls the current view's `get_actions(item, ctx)` function.
     pub fn get_applicable_actions(
         &self,
         lua: &Lua,
         items: &[Item],
     ) -> Result<Vec<ActionInfo>, String> {
-        engine_impl::get_applicable_actions(&self.registry, lua, items)
-    }
+        // Get the first item (actions are typically for the focused item)
+        let item = match items.first() {
+            Some(item) => item,
+            None => return Ok(Vec::new()),
+        };
 
-    /// Get the default action for the given items (first applicable).
-    pub fn get_default_action(
-        &self,
-        lua: &Lua,
-        items: &[Item],
-    ) -> Result<Option<ActionInfo>, String> {
-        engine_impl::get_default_action(&self.registry, lua, items)
+        // Get current view's get_actions function and view_data
+        let (get_actions_key, view_data, view_id) = match self.view_stack.with_top(|view| {
+            (
+                view.view.get_actions_fn.as_ref().map(|f| f.key.clone()),
+                view.view.view_data.clone(),
+                view.view.id.clone().unwrap_or_default(),
+            )
+        }) {
+            Some((Some(key), data, id)) => (key, data, id),
+            Some((None, _, _)) => return Ok(Vec::new()), // No get_actions function
+            None => return Err("No current view".to_string()),
+        };
+
+        // Call the get_actions function
+        let parsed_actions = crate::lua::call_get_actions(lua, &get_actions_key, item, &view_data)
+            .map_err(|e| format!("get_actions failed: {}", e))?;
+
+        // Convert to ActionInfo
+        let actions = parsed_actions
+            .into_iter()
+            .map(|a| ActionInfo {
+                view_id: view_id.clone(),
+                id: a.id,
+                title: a.title,
+                icon: a.icon,
+                bulk: false, // TODO: support bulk actions
+                handler_key: Some(a.handler_key),
+            })
+            .collect();
+
+        Ok(actions)
     }
 
     /// Execute a Lua callback with action-style context.
     ///
-    /// This is used for keybindings that map to Lua functions, but the engine
-    /// doesn't know about keybindings specifically - it just executes the
-    /// callback with the current view's context.
-    ///
-    /// The callback receives: items, view_data (via ActionContextLua bridge).
-    /// Any effects the callback collects are applied and converted to ActionResult.
+    /// Used for keybindings that map to Lua functions.
     pub fn execute_lua_callback(
         &self,
         lua: &Lua,
@@ -282,24 +235,26 @@ impl QueryEngine {
     }
 
     /// Execute an action on the given items.
+    ///
+    /// The `action_id` should be the handler_key from `ActionInfo`.
     pub fn execute_action(
         &self,
         lua: &Lua,
-        plugin_name: &str,
-        action_index: usize,
+        _view_id: &str,
+        action_id: &str,
         items: &[Item],
     ) -> Result<ActionResult, String> {
-        // Get effects from the action
-        let effects = engine_impl::execute_action(
-            &self.registry,
-            &self.view_stack,
-            lua,
-            plugin_name,
-            action_index,
-            items,
-        )?;
+        // Get view_data from current view
+        let view_data = self
+            .view_stack
+            .with_top(|v| v.view.view_data.clone())
+            .unwrap_or(serde_json::Value::Null);
 
-        // Apply effects and convert to ActionResult
+        // Call the action handler (action_id is the handler_key)
+        let effects = crate::lua::call_action_run(lua, action_id, items, &view_data)
+            .map_err(|e| format!("Action execution failed: {}", e))?;
+
+        // Apply effects
         let result = self.apply_effects(lua, effects);
         Ok(self.apply_result_to_action_result(result))
     }
@@ -327,6 +282,11 @@ impl QueryEngine {
 
         if let Some(message) = result.progress {
             return ActionResult::Progress { message };
+        }
+
+        // If groups were set (e.g., keybinding handler updating results)
+        if let Some(groups) = result.groups {
+            return ActionResult::UpdateResults { groups };
         }
 
         // If stack grew, a view was pushed
@@ -482,6 +442,12 @@ impl QueryEngine {
                 Effect::Fail { error } => {
                     result.error = Some(error);
                 }
+                Effect::Notify(message) => {
+                    result.notification = Some(message);
+                }
+                Effect::SetLoading(loading) => {
+                    result.loading = Some(loading);
+                }
                 // Selection effects are ignored - UI owns selection state
                 Effect::Select(_) | Effect::Deselect(_) | Effect::ClearSelection => {
                     tracing::debug!("Ignoring selection effect - UI owns selection state");
@@ -499,6 +465,10 @@ impl QueryEngine {
             title: spec.title.clone(),
             placeholder: spec.placeholder.clone(),
             source_fn: LuaFunctionRef::new(spec.source_fn_key.clone()),
+            get_actions_fn: spec
+                .get_actions_fn_key
+                .as_ref()
+                .map(|k| LuaFunctionRef::new(k.clone())),
             selection: spec.selection_mode,
             on_select_fn: spec
                 .on_select_fn_key
@@ -528,6 +498,10 @@ pub struct ApplyResult {
     pub completed: Option<String>,
     /// Error message, if any.
     pub error: Option<String>,
+    /// Notification message (doesn't dismiss).
+    pub notification: Option<String>,
+    /// Loading state, if changed.
+    pub loading: Option<bool>,
 }
 
 // =============================================================================
@@ -558,6 +532,7 @@ mod tests {
             title: Some("View 1".to_string()),
             placeholder: None,
             source_fn: LuaFunctionRef::new("test:source:1".to_string()),
+            get_actions_fn: None,
             selection: SelectionMode::Single,
             on_select_fn: None,
             on_submit_fn: None,
@@ -569,6 +544,7 @@ mod tests {
             title: Some("View 2".to_string()),
             placeholder: None,
             source_fn: LuaFunctionRef::new("test:source:2".to_string()),
+            get_actions_fn: None,
             selection: SelectionMode::Multi,
             on_select_fn: None,
             on_submit_fn: None,
@@ -614,6 +590,7 @@ mod tests {
             title: Some("Test View".to_string()),
             placeholder: Some("Search...".to_string()),
             source_fn: LuaFunctionRef::new("test:source".to_string()),
+            get_actions_fn: None,
             selection: SelectionMode::Single,
             on_select_fn: None,
             on_submit_fn: None,

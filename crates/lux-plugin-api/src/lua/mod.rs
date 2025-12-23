@@ -1,9 +1,11 @@
 //! Lua bindings for the Plugin API.
 //!
 //! This module implements the `lux` global namespace with:
-//! - `lux.register(plugin)` - Register a plugin
-//! - `lux.configure(name, config)` - Configure a registered plugin
-//! - `lux.root_view` - Assignable root view
+//! - `lux.views.add/get/list()` - View registry
+//! - `lux.set_root(view)` - Set the root view
+//! - `lux.hook(path, fn)` - Register hooks
+//! - `lux.keymap.set/del/set_global/del_global()` - Keybindings
+//! - `lux.shell/clipboard/fs/ui` - Utilities
 
 use std::sync::Arc;
 
@@ -19,51 +21,28 @@ pub mod bridge;
 mod parse;
 
 pub use bridge::{
-    call_action_run, call_source_search, call_trigger_run, call_view_on_select,
-    call_view_on_submit, cleanup_view_registry_keys,
+    call_action_run, call_get_actions, call_hooked_search, call_source_search, call_trigger_run,
+    call_view_on_select, call_view_on_submit, cleanup_view_registry_keys, ParsedAction,
 };
 pub use parse::*;
 
+use crate::hooks::validate_hook_path;
+use crate::views::ViewRegistryError;
+
 /// Register the new `lux` API in a Lua state.
 ///
-/// This creates the minimal spec-compliant API:
-/// - `lux.register(plugin)` - Register a plugin with triggers, sources, actions
-/// - `lux.configure(name, config)` - Pass configuration to a plugin
-/// - `lux.set_root_view` - Set a custom root view
+/// Create the Lua API for the plugin system.
+///
+/// This creates the spec-compliant API:
+/// - `lux.views.add/get/list()` - View registry
+/// - `lux.set_root(view)` - Set the root view
+/// - `lux.hook(path, fn)` - Register hooks
+/// - `lux.keymap.set/del/set_global/del_global()` - Keybindings
+/// - `lux.shell/clipboard/fs/ui` - Utilities
 pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<()> {
     let lux = lua.create_table()?;
 
-    // lux.register(plugin)
-    {
-        let registry = Arc::clone(&registry);
-        let register_fn = lua.create_function(move |lua, table: Table| {
-            let plugin = parse_plugin(lua, table)?;
-
-            registry
-                .register(plugin)
-                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-
-            Ok(())
-        })?;
-        lux.set("register", register_fn)?;
-    }
-
-    // lux.configure(name, config)
-    {
-        let registry = Arc::clone(&registry);
-        let configure_fn = lua.create_function(move |lua, (name, config): (String, Value)| {
-            let config_json = lua_value_to_json(lua, config)?;
-
-            registry
-                .configure(&name, config_json, lua)
-                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-
-            Ok(())
-        })?;
-        lux.set("configure", configure_fn)?;
-    }
-
-    // lux.set_root_view(view)
+    // lux.set_root_view(view) - legacy alias
     {
         let registry = Arc::clone(&registry);
         let set_root_view_fn = lua.create_function(move |lua, table: Table| {
@@ -75,22 +54,116 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
         lux.set("set_root_view", set_root_view_fn)?;
     }
 
-    // lux.builtin namespace (for helper functions)
-    let builtin = lua.create_table()?;
-
-    // lux.builtin.search_all(ctx) - Search all root sources
+    // lux.set_root(view) - new API
     {
-        let _registry = Arc::clone(&registry);
-        let search_all_fn = lua.create_function(move |lua, _ctx: Table| {
-            // Placeholder - actual implementation will call all root sources
-            // and merge results
-            let result = lua.create_table()?;
-            Ok(result)
+        let registry = Arc::clone(&registry);
+        let set_root_fn = lua.create_function(move |lua, table: Table| {
+            let view = parse_view(lua, table)?;
+
+            registry.set_root_view(view);
+            Ok(())
         })?;
-        builtin.set("search_all", search_all_fn)?;
+        lux.set("set_root", set_root_fn)?;
     }
 
-    lux.set("builtin", builtin)?;
+    // lux.views namespace
+    let views_table = lua.create_table()?;
+
+    // lux.views.add(def) - register a view
+    {
+        let registry = Arc::clone(&registry);
+        let add_fn = lua.create_function(move |lua, table: Table| {
+            let view_def = parse_view_definition(lua, table)?;
+            let view_registry = registry.views();
+
+            view_registry.add(view_def).map_err(|e| match e {
+                ViewRegistryError::ViewAlreadyExists(id) => {
+                    mlua::Error::RuntimeError(format!("View '{}' already exists", id))
+                }
+                _ => mlua::Error::RuntimeError(e.to_string()),
+            })?;
+
+            Ok(())
+        })?;
+        views_table.set("add", add_fn)?;
+    }
+
+    // lux.views.get(id) - get a view by ID (returns table with id, title, placeholder, selection)
+    {
+        let registry = Arc::clone(&registry);
+        let get_fn = lua.create_function(move |lua, id: String| {
+            let view_registry = registry.views();
+
+            match view_registry.with_view(&id, |view| {
+                let table = lua.create_table()?;
+                table.set("id", view.id.as_str())?;
+                if let Some(ref title) = view.title {
+                    table.set("title", title.as_str())?;
+                }
+                if let Some(ref placeholder) = view.placeholder {
+                    table.set("placeholder", placeholder.as_str())?;
+                }
+                let selection_str = match view.selection {
+                    lux_core::SelectionMode::Single => "single",
+                    lux_core::SelectionMode::Multi => "multi",
+                    lux_core::SelectionMode::Custom => "custom",
+                };
+                table.set("selection", selection_str)?;
+                Ok::<_, mlua::Error>(table)
+            }) {
+                Some(result) => result.map(Value::Table),
+                None => Ok(Value::Nil),
+            }
+        })?;
+        views_table.set("get", get_fn)?;
+    }
+
+    // lux.views.list() - list all registered view IDs
+    {
+        let registry = Arc::clone(&registry);
+        let list_fn = lua.create_function(move |lua, ()| {
+            let view_registry = registry.views();
+            let ids = view_registry.list();
+
+            let table = lua.create_table()?;
+            for (i, id) in ids.iter().enumerate() {
+                table.set(i + 1, id.as_str())?;
+            }
+
+            Ok(table)
+        })?;
+        views_table.set("list", list_fn)?;
+    }
+
+    lux.set("views", views_table)?;
+
+    // lux.hook(path, fn) - register a hook, returns unhook function
+    {
+        let registry = Arc::clone(&registry);
+        let hook_fn = lua.create_function(move |lua, (path, func): (String, Function)| {
+            // Validate hook path
+            validate_hook_path(&path).map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+
+            // Generate a unique key and store the function
+            let key = format!("hook:{}:{}", path, generate_handler_id());
+            let func_ref = LuaFunctionRef::from_function(lua, func, key.clone())?;
+
+            // Add to hook registry
+            let hook_registry = registry.hooks();
+            let hook_id = hook_registry.add(&path, func_ref);
+
+            // Create unhook function
+            let registry_for_unhook = Arc::clone(&registry);
+            let hook_id_for_unhook = hook_id.clone();
+            let unhook_fn = lua.create_function(move |_lua, ()| {
+                let removed = registry_for_unhook.hooks().remove(&hook_id_for_unhook);
+                Ok(removed)
+            })?;
+
+            Ok(unhook_fn)
+        })?;
+        lux.set("hook", hook_fn)?;
+    }
 
     // lux.keymap namespace
     let keymap_table = lua.create_table()?;
@@ -170,13 +243,9 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
 
     // lux.keymap.del(key, opts?)
     //
-    // Remove a keybinding by key, context, and optional view.
-    // Note: Only works at startup time before bindings are registered with GPUI.
-    //
     // Examples:
-    //   lux.keymap.del("enter", { context = "SearchInput" })
-    //   lux.keymap.del("up", { context = "Launcher" })
-    //   lux.keymap.del("ctrl+d", { context = "Launcher", view = "files" })
+    //   lux.keymap.del("ctrl+n")
+    //   lux.keymap.del("ctrl+n", { view = "files" })
     {
         let registry = Arc::clone(&registry);
         let del_fn = lua.create_function(move |lua, args: MultiValue| {
@@ -276,8 +345,10 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
 
     // lux.keymap.del_global(key)
     //
-    // Remove a global hotkey by key string.
-    // Note: Only works at startup time before hotkeys are registered with the OS.
+    // Remove a global hotkey.
+    //
+    // Examples:
+    //   lux.keymap.del_global("cmd+space")
     {
         let registry = Arc::clone(&registry);
         let del_global_fn = lua.create_function(move |lua, key: Value| {
@@ -293,31 +364,28 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
 
     lux.set("keymap", keymap_table)?;
 
-    // lux.shell(command, opts?) - Execute a shell command with timeout
+    // lux.shell - Shell command execution namespace
+    //
+    // Usage:
+    //   lux.shell("open", path)         -- async fire-and-forget
+    //   lux.shell.sync("ls", "-la")     -- blocking, returns output
+    //   lux.shell.run({cmd, cwd, env})  -- advanced options
     {
-        let shell_fn = lua.create_function(|lua, (command, opts): (String, Option<Table>)| {
+        let shell_table = lua.create_table()?;
+
+        // lux.shell.sync(command) - Blocking execution, returns output
+        let sync_fn = lua.create_function(|lua, command: String| {
             use std::io::Read;
             use std::process::{Command, Stdio};
             use std::time::Duration;
             use wait_timeout::ChildExt;
 
-            let timeout_ms = opts
-                .as_ref()
-                .and_then(|o| o.get::<Option<u64>>("timeout_ms").ok().flatten())
-                .unwrap_or(30_000);
-
-            let cwd = opts
-                .as_ref()
-                .and_then(|o| o.get::<Option<String>>("cwd").ok().flatten());
+            let timeout_ms = 30_000u64;
 
             let mut cmd = Command::new("sh");
             cmd.args(["-c", &command])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-
-            if let Some(dir) = cwd {
-                cmd.current_dir(dir);
-            }
 
             let mut child = cmd
                 .spawn()
@@ -325,13 +393,11 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
 
             let timeout = Duration::from_millis(timeout_ms);
 
-            // Wait for process with timeout
             let status = match child.wait_timeout(timeout) {
                 Ok(Some(status)) => status,
                 Ok(None) => {
-                    // Timeout expired - kill the process
                     let _ = child.kill();
-                    let _ = child.wait(); // Reap the zombie process
+                    let _ = child.wait();
 
                     let result = lua.create_table()?;
                     result.set("stdout", "")?;
@@ -352,7 +418,6 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
                 }
             };
 
-            // Process completed - read stdout and stderr
             let mut stdout = String::new();
             let mut stderr = String::new();
 
@@ -372,7 +437,136 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
 
             Ok(result)
         })?;
-        lux.set("shell", shell_fn)?;
+        shell_table.set("sync", sync_fn)?;
+
+        // lux.shell.run({ cmd, cwd?, env?, timeout_ms? }) - Advanced options
+        let run_fn = lua.create_function(|lua, opts: Table| {
+            use std::io::Read;
+            use std::process::{Command, Stdio};
+            use std::time::Duration;
+            use wait_timeout::ChildExt;
+
+            let command: String = opts.get("cmd").map_err(|_| {
+                mlua::Error::RuntimeError("shell.run requires 'cmd' field".to_string())
+            })?;
+
+            let timeout_ms = opts
+                .get::<Option<u64>>("timeout_ms")
+                .ok()
+                .flatten()
+                .unwrap_or(30_000);
+
+            let cwd = opts.get::<Option<String>>("cwd").ok().flatten();
+
+            let env: Option<Table> = opts.get("env").ok();
+
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", &command])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            if let Some(dir) = cwd {
+                cmd.current_dir(dir);
+            }
+
+            if let Some(env_table) = env {
+                for (key, value) in env_table.pairs::<String, String>().flatten() {
+                    cmd.env(key, value);
+                }
+            }
+
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| mlua::Error::RuntimeError(format!("Command spawn failed: {}", e)))?;
+
+            let timeout = Duration::from_millis(timeout_ms);
+
+            let status = match child.wait_timeout(timeout) {
+                Ok(Some(status)) => status,
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+
+                    let result = lua.create_table()?;
+                    result.set("stdout", "")?;
+                    result.set(
+                        "stderr",
+                        format!("Command timed out after {}ms", timeout_ms),
+                    )?;
+                    result.set("exit_code", -1)?;
+                    result.set("success", false)?;
+                    result.set("timed_out", true)?;
+                    return Ok(result);
+                }
+                Err(e) => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Command wait failed: {}",
+                        e
+                    )));
+                }
+            };
+
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+
+            if let Some(mut stdout_handle) = child.stdout.take() {
+                let _ = stdout_handle.read_to_string(&mut stdout);
+            }
+            if let Some(mut stderr_handle) = child.stderr.take() {
+                let _ = stderr_handle.read_to_string(&mut stderr);
+            }
+
+            let result = lua.create_table()?;
+            result.set("stdout", stdout)?;
+            result.set("stderr", stderr)?;
+            result.set("exit_code", status.code().unwrap_or(-1))?;
+            result.set("success", status.success())?;
+            result.set("timed_out", false)?;
+
+            Ok(result)
+        })?;
+        shell_table.set("run", run_fn)?;
+
+        // Set __call metamethod for lux.shell("command", ...) - fire-and-forget
+        let metatable = lua.create_table()?;
+        let call_fn = lua.create_function(|_lua, args: MultiValue| {
+            use std::process::{Command, Stdio};
+
+            let mut args_iter = args.into_iter();
+            args_iter.next(); // Skip 'self' (the shell table)
+
+            // Collect all arguments as strings and join them
+            let parts: Vec<String> = args_iter
+                .filter_map(|v| match v {
+                    Value::String(s) => Some(s.to_str().ok()?.to_string()),
+                    Value::Number(n) => Some(n.to_string()),
+                    Value::Integer(i) => Some(i.to_string()),
+                    _ => None,
+                })
+                .collect();
+
+            if parts.is_empty() {
+                return Err(mlua::Error::RuntimeError(
+                    "shell() requires at least one argument".to_string(),
+                ));
+            }
+
+            let command = parts.join(" ");
+
+            // Fire-and-forget: spawn detached process
+            Command::new("sh")
+                .args(["-c", &command])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| mlua::Error::RuntimeError(format!("Command spawn failed: {}", e)))?;
+
+            Ok(())
+        })?;
+        metatable.set("__call", call_fn)?;
+        shell_table.set_metatable(Some(metatable))?;
+
+        lux.set("shell", shell_table)?;
     }
 
     // lux.icon(app_path) - Get icon file path for macOS app (converts to PNG)
@@ -433,6 +627,247 @@ pub fn register_lux_api(lua: &Lua, registry: Arc<PluginRegistry>) -> LuaResult<(
             }
         })?;
         lux.set("icon", icon_fn)?;
+    }
+
+    // lux.clipboard - Clipboard operations
+    {
+        let clipboard_table = lua.create_table()?;
+
+        // lux.clipboard.read() - Read text from clipboard
+        let read_fn = lua.create_function(|_lua, ()| {
+            use std::process::Command;
+
+            let output = Command::new("pbpaste")
+                .output()
+                .map_err(|e| mlua::Error::RuntimeError(format!("Clipboard read failed: {}", e)))?;
+
+            if output.status.success() {
+                Ok(Some(String::from_utf8_lossy(&output.stdout).to_string()))
+            } else {
+                Ok(None)
+            }
+        })?;
+        clipboard_table.set("read", read_fn)?;
+
+        // lux.clipboard.write(text) - Write text to clipboard
+        let write_fn = lua.create_function(|_lua, text: String| {
+            use std::io::Write;
+            use std::process::{Command, Stdio};
+
+            let mut child = Command::new("pbcopy")
+                .stdin(Stdio::piped())
+                .spawn()
+                .map_err(|e| mlua::Error::RuntimeError(format!("Clipboard write failed: {}", e)))?;
+
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(text.as_bytes()).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("Clipboard write failed: {}", e))
+                })?;
+            }
+
+            let status = child
+                .wait()
+                .map_err(|e| mlua::Error::RuntimeError(format!("Clipboard write failed: {}", e)))?;
+
+            Ok(status.success())
+        })?;
+        clipboard_table.set("write", write_fn)?;
+
+        lux.set("clipboard", clipboard_table)?;
+    }
+
+    // lux.fs - Filesystem operations
+    {
+        let fs_table = lua.create_table()?;
+
+        // lux.fs.read(path) - Read file contents
+        let read_fn =
+            lua.create_function(|_lua, path: String| match std::fs::read_to_string(&path) {
+                Ok(content) => Ok(Some(content)),
+                Err(_) => Ok(None),
+            })?;
+        fs_table.set("read", read_fn)?;
+
+        // lux.fs.write(path, content) - Write content to file
+        let write_fn = lua.create_function(|_lua, (path, content): (String, String)| {
+            std::fs::write(&path, content)
+                .map_err(|e| mlua::Error::RuntimeError(format!("File write failed: {}", e)))?;
+            Ok(true)
+        })?;
+        fs_table.set("write", write_fn)?;
+
+        // lux.fs.exists(path) - Check if path exists
+        let exists_fn =
+            lua.create_function(|_lua, path: String| Ok(std::path::Path::new(&path).exists()))?;
+        fs_table.set("exists", exists_fn)?;
+
+        // lux.fs.is_dir(path) - Check if path is a directory
+        let is_dir_fn =
+            lua.create_function(|_lua, path: String| Ok(std::path::Path::new(&path).is_dir()))?;
+        fs_table.set("is_dir", is_dir_fn)?;
+
+        // lux.fs.list(dir) - List directory contents
+        let list_fn = lua.create_function(|lua, dir: String| {
+            let entries: Vec<String> = std::fs::read_dir(&dir)
+                .map_err(|e| mlua::Error::RuntimeError(format!("Directory read failed: {}", e)))?
+                .filter_map(|entry| {
+                    entry.ok().and_then(|e| {
+                        e.path()
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                    })
+                })
+                .collect();
+
+            let table = lua.create_table()?;
+            for (i, name) in entries.iter().enumerate() {
+                table.set(i + 1, name.as_str())?;
+            }
+            Ok(table)
+        })?;
+        fs_table.set("list", list_fn)?;
+
+        // lux.fs.glob(pattern) - Glob pattern matching
+        let glob_fn = lua.create_function(|lua, pattern: String| {
+            use std::process::Command;
+
+            // Use shell glob expansion
+            let output = Command::new("sh")
+                .args(["-c", &format!("ls -1 {} 2>/dev/null || true", pattern)])
+                .output()
+                .map_err(|e| mlua::Error::RuntimeError(format!("Glob failed: {}", e)))?;
+
+            let output_str = String::from_utf8_lossy(&output.stdout);
+            let paths: Vec<&str> = output_str
+                .trim()
+                .split('\n')
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let table = lua.create_table()?;
+            for (i, path) in paths.iter().enumerate() {
+                table.set(i + 1, *path)?;
+            }
+            Ok(table)
+        })?;
+        fs_table.set("glob", glob_fn)?;
+
+        // lux.fs.home() - Get home directory
+        let home_fn = lua.create_function(|_lua, ()| {
+            Ok(dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
+        })?;
+        fs_table.set("home", home_fn)?;
+
+        // lux.fs.config() - Get config directory
+        let config_fn = lua.create_function(|_lua, ()| {
+            Ok(dirs::config_dir().map(|p| p.to_string_lossy().to_string()))
+        })?;
+        fs_table.set("config", config_fn)?;
+
+        lux.set("fs", fs_table)?;
+    }
+
+    // lux.ui - UI control operations
+    // Note: These create effects that need to be handled by the UI layer
+    {
+        let ui_table = lua.create_table()?;
+
+        // lux.ui.show() - Show the launcher window
+        let show_fn = lua.create_function(|_lua, ()| {
+            // TODO: Connect to UI layer - for now just log
+            tracing::debug!("lux.ui.show() called");
+            Ok(())
+        })?;
+        ui_table.set("show", show_fn)?;
+
+        // lux.ui.hide() - Hide the launcher window
+        let hide_fn = lua.create_function(|_lua, ()| {
+            tracing::debug!("lux.ui.hide() called");
+            Ok(())
+        })?;
+        ui_table.set("hide", hide_fn)?;
+
+        // lux.ui.toggle() - Toggle the launcher window
+        let toggle_fn = lua.create_function(|_lua, ()| {
+            tracing::debug!("lux.ui.toggle() called");
+            Ok(())
+        })?;
+        ui_table.set("toggle", toggle_fn)?;
+
+        // lux.ui.notify(message, opts?) - Show a notification
+        let notify_fn =
+            lua.create_function(|_lua, (message, _opts): (String, Option<Table>)| {
+                // TODO: Connect to notification system
+                tracing::info!("Notification: {}", message);
+                Ok(())
+            })?;
+        ui_table.set("notify", notify_fn)?;
+
+        lux.set("ui", ui_table)?;
+    }
+
+    // lux.item_id(item) - Get stable identity for an item
+    {
+        let item_id_fn = lua.create_function(|_lua, item: Table| {
+            // Try to get 'id' field first, then fall back to 'title'
+            if let Ok(Some(id)) = item.get::<Option<String>>("id") {
+                return Ok(id);
+            }
+            if let Ok(Some(title)) = item.get::<Option<String>>("title") {
+                return Ok(title);
+            }
+            Err(mlua::Error::RuntimeError(
+                "item_id: item must have 'id' or 'title' field".to_string(),
+            ))
+        })?;
+        lux.set("item_id", item_id_fn)?;
+    }
+
+    // lux.map_items(result, fn) - Transform items preserving group structure
+    {
+        let map_items_fn = lua.create_function(|lua, (result, mapper): (Table, Function)| {
+            // Check if result has 'groups' field
+            if let Ok(groups) = result.get::<Table>("groups") {
+                // Has groups - map each group's items
+                let new_groups = lua.create_table()?;
+                for pair in groups.pairs::<i64, Table>() {
+                    let (idx, group) = pair?;
+                    let new_group = lua.create_table()?;
+
+                    // Copy title if present
+                    if let Ok(Some(t)) = group.get::<Option<String>>("title") {
+                        new_group.set("title", t)?;
+                    }
+
+                    // Map items
+                    if let Ok(items) = group.get::<Table>("items") {
+                        let new_items = lua.create_table()?;
+                        for item_pair in items.pairs::<i64, Value>() {
+                            let (i, item) = item_pair?;
+                            let mapped: Value = mapper.call(item)?;
+                            new_items.set(i, mapped)?;
+                        }
+                        new_group.set("items", new_items)?;
+                    }
+
+                    new_groups.set(idx, new_group)?;
+                }
+
+                let new_result = lua.create_table()?;
+                new_result.set("groups", new_groups)?;
+                Ok(new_result)
+            } else {
+                // No groups - treat as flat array of items
+                let new_items = lua.create_table()?;
+                for pair in result.pairs::<i64, Value>() {
+                    let (idx, item) = pair?;
+                    let mapped: Value = mapper.call(item)?;
+                    new_items.set(idx, mapped)?;
+                }
+                Ok(new_items)
+            }
+        })?;
+        lux.set("map_items", map_items_fn)?;
     }
 
     // Set as global

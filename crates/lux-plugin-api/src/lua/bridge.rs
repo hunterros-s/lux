@@ -149,7 +149,18 @@ impl UserData for ActionContextLua<'_> {
             Ok(())
         });
 
-        // Note: No set_items - actions consume items, don't produce them
+        // set_items and set_groups for keybinding handlers that need to update results
+        methods.add_method("set_items", |lua, this, items: Table| {
+            let items = parse_items(lua, items)?;
+            this.inner.set_groups(vec![Group { title: None, items }]);
+            Ok(())
+        });
+
+        methods.add_method("set_groups", |lua, this, groups: Table| {
+            let groups = parse_groups(lua, groups)?;
+            this.inner.set_groups(groups);
+            Ok(())
+        });
     }
 }
 
@@ -184,6 +195,7 @@ pub fn call_trigger_run(
 
 /// Call a source's search function using effect-based execution.
 ///
+/// Calls the function as `search(query, ctx)`.
 /// Returns the collected effects for the engine to apply.
 pub fn call_source_search(
     lua: &Lua,
@@ -198,15 +210,134 @@ pub fn call_source_search(
         let wrapper = scope.create_userdata(SourceContextLua { inner: ctx })?;
 
         let func: mlua::Function = lua.named_registry_value(search_fn_key)?;
-        func.call::<()>(wrapper)?;
+        // Call as search(query, ctx)
+        func.call::<()>((query, wrapper))?;
         Ok(())
     })?;
 
     Ok(collector.take())
 }
 
+/// Call a source's search function with hook chain.
+///
+/// Hook functions are called in order with `(query, ctx, original)`.
+/// Each hook can call `original(query, ctx)` to continue the chain.
+pub fn call_hooked_search(
+    lua: &Lua,
+    search_fn_key: &str,
+    hook_fn_keys: &[String],
+    query: &str,
+    view_data: &serde_json::Value,
+) -> LuaResult<Vec<Effect>> {
+    let collector = EffectCollector::new();
+
+    lua.scope(|scope| {
+        let ctx = SourceContext::new(query, view_data, &collector);
+        let wrapper = scope.create_userdata(SourceContextLua { inner: ctx })?;
+
+        // Get the original search function
+        let original_fn: mlua::Function = lua.named_registry_value(search_fn_key)?;
+
+        if hook_fn_keys.is_empty() {
+            // No hooks, call directly
+            original_fn.call::<()>((query, wrapper))?;
+        } else {
+            // Build hook chain: each hook wraps the next
+            // Chain order: hooks[0] wraps hooks[1] wraps ... wraps original
+            // So we start from the end and work backwards
+
+            // Start with original as the innermost function
+            let mut current: mlua::Function = original_fn;
+
+            // Wrap each hook around the current function (in reverse order)
+            for hook_key in hook_fn_keys.iter().rev() {
+                let hook_fn: mlua::Function = lua.named_registry_value(hook_key)?;
+                let next_fn = current.clone();
+
+                // Create a wrapper that calls the next function in the chain
+                current =
+                    scope.create_function(move |_lua, (q, ctx): (String, mlua::AnyUserData)| {
+                        next_fn.call::<()>((q, ctx))
+                    })?;
+
+                // Now call the hook with (query, ctx, original)
+                // But we need to store this for the final call
+                let wrapper_for_hook = current.clone();
+                current =
+                    scope.create_function(move |_lua, (q, ctx): (String, mlua::AnyUserData)| {
+                        hook_fn.call::<()>((q.clone(), ctx, wrapper_for_hook.clone()))
+                    })?;
+            }
+
+            // Call the outermost wrapper
+            current.call::<()>((query.to_string(), wrapper))?;
+        }
+
+        Ok(())
+    })?;
+
+    Ok(collector.take())
+}
+
+/// Call a view's get_actions function.
+///
+/// Calls the function as `get_actions(item, ctx)`.
+/// Returns the parsed actions list.
+pub fn call_get_actions(
+    lua: &Lua,
+    get_actions_fn_key: &str,
+    item: &Item,
+    view_data: &serde_json::Value,
+) -> LuaResult<Vec<ParsedAction>> {
+    let item_table = item_to_lua(lua, item)?;
+    let ctx = lua.create_table()?;
+    ctx.set("view_data", json_to_lua_value(lua, view_data)?)?;
+
+    let func: mlua::Function = lua.named_registry_value(get_actions_fn_key)?;
+    let result: Table = func.call((item_table, ctx))?;
+
+    // Parse actions from the returned table
+    let mut actions = Vec::new();
+    for pair in result.pairs::<i64, Table>() {
+        let (_, action_table) = pair?;
+        let id: String = action_table
+            .get("id")
+            .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+        let title: String = action_table.get("title").map_err(|_| {
+            mlua::Error::RuntimeError("Action missing required 'title' field".to_string())
+        })?;
+        let icon: Option<String> = action_table.get("icon")?;
+
+        // Store the handler function in the registry
+        let handler: mlua::Function = action_table.get("handler").map_err(|_| {
+            mlua::Error::RuntimeError("Action missing required 'handler' function".to_string())
+        })?;
+        let handler_key = format!("action:{}:{}", id, uuid::Uuid::new_v4());
+        lua.set_named_registry_value(&handler_key, handler)?;
+
+        actions.push(ParsedAction {
+            id,
+            title,
+            icon,
+            handler_key,
+        });
+    }
+
+    Ok(actions)
+}
+
+/// Parsed action from get_actions callback.
+#[derive(Debug)]
+pub struct ParsedAction {
+    pub id: String,
+    pub title: String,
+    pub icon: Option<String>,
+    pub handler_key: String,
+}
+
 /// Call an action's run function using effect-based execution.
 ///
+/// Calls the function as `handler(items, ctx)`.
 /// Returns the collected effects for the engine to apply.
 pub fn call_action_run(
     lua: &Lua,
@@ -220,8 +351,12 @@ pub fn call_action_run(
         let ctx = ActionContext::new(items, view_data, &collector);
         let wrapper = scope.create_userdata(ActionContextLua { inner: ctx })?;
 
+        // Convert items to Lua table
+        let items_table = items_to_lua(lua, items)?;
+
         let func: mlua::Function = lua.named_registry_value(run_fn_key)?;
-        func.call::<()>(wrapper)?;
+        // Call as handler(items, ctx)
+        func.call::<()>((items_table, wrapper))?;
         Ok(())
     })?;
 
@@ -363,17 +498,20 @@ pub fn call_view_on_submit(
 
 /// Parse a ViewSpec from a Lua table.
 ///
-/// Uses inline source functions stored in Lua registry.
+/// Uses inline search functions stored in Lua registry.
 fn parse_view_spec(lua: &Lua, table: Table) -> LuaResult<ViewSpec> {
     let title: Option<String> = table.get("title")?;
     let placeholder: Option<String> = table.get("placeholder")?;
 
-    // Get the source function and store it directly in registry
-    let source_fn: mlua::Function = table.get("source").map_err(|e| {
-        mlua::Error::RuntimeError(format!("ViewSpec requires 'source' function: {}", e))
-    })?;
-    let source_key = format!("view:source:{}", uuid::Uuid::new_v4());
-    lua.set_named_registry_value(&source_key, source_fn)?;
+    // Get the search function (accepts both 'search' and 'source' for compatibility)
+    let search_fn: mlua::Function = table
+        .get("search")
+        .or_else(|_| table.get("source"))
+        .map_err(|_| {
+            mlua::Error::RuntimeError("ViewSpec requires 'search' function".to_string())
+        })?;
+    let source_key = format!("view:search:{}", uuid::Uuid::new_v4());
+    lua.set_named_registry_value(&source_key, search_fn)?;
 
     // Parse selection mode
     let selection_mode = match table.get::<Option<String>>("selection")? {
@@ -624,14 +762,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_view_spec_missing_source() {
+    fn test_parse_view_spec_missing_search() {
         let lua = Lua::new();
 
         let table = lua
             .load(
                 r#"
             return {
-                title = "No Source",
+                title = "No Search",
             }
         "#,
             )
@@ -639,6 +777,6 @@ mod tests {
             .unwrap();
 
         let err = parse_view_spec(&lua, table).unwrap_err();
-        assert!(err.to_string().contains("source"));
+        assert!(err.to_string().contains("search"));
     }
 }

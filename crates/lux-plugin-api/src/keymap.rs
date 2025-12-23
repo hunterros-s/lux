@@ -344,20 +344,11 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_hotkey_from_name() {
-        assert_eq!(
-            BuiltInHotkey::from_name("toggle_launcher"),
-            Some(BuiltInHotkey::ToggleLauncher)
-        );
-        assert_eq!(BuiltInHotkey::from_name("unknown"), None);
-    }
-
-    #[test]
-    fn test_keymap_registry_set_global() {
+    fn test_global_hotkeys() {
         let registry = KeymapRegistry::new();
 
         registry.set_global(PendingHotkey {
-            key: "cmd+shift+space".to_string(),
+            key: "cmd+space".to_string(),
             handler: GlobalHandler::BuiltIn(BuiltInHotkey::ToggleLauncher),
         });
 
@@ -365,7 +356,7 @@ mod tests {
 
         // Override same key
         registry.set_global(PendingHotkey {
-            key: "cmd+shift+space".to_string(),
+            key: "cmd+space".to_string(),
             handler: GlobalHandler::Function {
                 id: "test".to_string(),
             },
@@ -373,48 +364,25 @@ mod tests {
 
         assert_eq!(registry.hotkey_count(), 1);
 
-        // Different key is a different hotkey
+        // Add another hotkey
         registry.set_global(PendingHotkey {
-            key: "cmd+space".to_string(),
+            key: "cmd+shift+space".to_string(),
             handler: GlobalHandler::BuiltIn(BuiltInHotkey::ToggleLauncher),
         });
 
         assert_eq!(registry.hotkey_count(), 2);
-    }
 
-    #[test]
-    fn test_keymap_registry_del_global() {
-        let registry = KeymapRegistry::new();
-
-        registry.set_global(PendingHotkey {
-            key: "cmd+shift+space".to_string(),
-            handler: GlobalHandler::BuiltIn(BuiltInHotkey::ToggleLauncher),
-        });
-
+        // Delete hotkey
+        assert!(registry.del_global("cmd+space"));
         assert_eq!(registry.hotkey_count(), 1);
-        assert!(registry.del_global("cmd+shift+space"));
-        assert_eq!(registry.hotkey_count(), 0);
-        assert!(!registry.del_global("cmd+shift+space")); // Already deleted
-    }
 
-    #[test]
-    fn test_keymap_registry_take_hotkeys() {
-        let registry = KeymapRegistry::new();
+        // Delete non-existent
+        assert!(!registry.del_global("cmd+space"));
 
-        registry.set_global(PendingHotkey {
-            key: "cmd+shift+space".to_string(),
-            handler: GlobalHandler::BuiltIn(BuiltInHotkey::ToggleLauncher),
-        });
-
-        registry.set_global(PendingHotkey {
-            key: "cmd+space".to_string(),
-            handler: GlobalHandler::Function {
-                id: "test".to_string(),
-            },
-        });
-
+        // Take all
         let hotkeys = registry.take_hotkeys();
-        assert_eq!(hotkeys.len(), 2);
+        assert_eq!(hotkeys.len(), 1);
+        assert_eq!(hotkeys[0].key, "cmd+shift+space");
         assert_eq!(registry.hotkey_count(), 0);
     }
 }

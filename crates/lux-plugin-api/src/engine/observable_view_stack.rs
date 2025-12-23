@@ -285,6 +285,7 @@ mod tests {
             title: Some(title.to_string()),
             placeholder: None,
             source_fn: LuaFunctionRef::new(format!("test:source:{}", title)),
+            get_actions_fn: None,
             selection: SelectionMode::Single,
             on_select_fn: None,
             on_submit_fn: None,
@@ -384,7 +385,7 @@ mod tests {
     #[test]
     fn test_modify_top_no_broadcast() {
         let stack = ObservableViewStack::new();
-        let rx = stack.subscribe();
+        let _rx = stack.subscribe();
 
         stack.push(test_instance("View 1"));
 

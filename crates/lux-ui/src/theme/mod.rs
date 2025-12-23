@@ -334,23 +334,29 @@ mod tests {
 
     #[test]
     fn test_appearance_override() {
-        let mut settings = ThemeSettings::default();
-
         // Force dark even when system is light
-        settings.appearance = Appearance::Dark;
+        let settings = ThemeSettings {
+            appearance: Appearance::Dark,
+            ..Default::default()
+        };
         let theme = Theme::from_settings(&settings, false);
         assert!(theme.is_dark);
 
         // Force light even when system is dark
-        settings.appearance = Appearance::Light;
+        let settings = ThemeSettings {
+            appearance: Appearance::Light,
+            ..Default::default()
+        };
         let theme = Theme::from_settings(&settings, true);
         assert!(!theme.is_dark);
     }
 
     #[test]
     fn test_custom_accent_hue() {
-        let mut settings = ThemeSettings::default();
-        settings.accent_hue = 0.0; // Red
+        let settings = ThemeSettings {
+            accent_hue: 0.0, // Red
+            ..Default::default()
+        };
 
         let theme = Theme::from_settings(&settings, true);
         // Accent should use the custom hue
@@ -361,8 +367,10 @@ mod tests {
 
     #[test]
     fn test_font_size_derivation() {
-        let mut settings = ThemeSettings::default();
-        settings.font_size = px(16.0);
+        let settings = ThemeSettings {
+            font_size: px(16.0),
+            ..Default::default()
+        };
 
         let theme = Theme::from_settings(&settings, true);
         let base: f32 = theme.font_size.into();
